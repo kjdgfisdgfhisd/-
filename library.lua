@@ -1,12 +1,10 @@
--- MenuLibrary v3.0 — Rayfield-style + Dropdown + Slider + Input + Config
+-- MenuLibrary v3.1 (Rayfield-style + Dropdown + Slider + Input + Section + Config)
 -- Loader: local Library = loadstring(game:HttpGet(".../library.lua"))()
 
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
-local Stats            = game:GetService("Stats")
 local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local HttpService      = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
@@ -37,7 +35,7 @@ local HOTKEY = Enum.KeyCode.RightShift
 local CONFIG_FILE = "MenuLibrary_config.json"
 
 ----------------------------------------------------------------
--- JSON (минимальный, для конфига)
+-- JSON (мини)
 ----------------------------------------------------------------
 local function jsonEncode(tbl)
     local function enc(v)
@@ -68,7 +66,6 @@ local function jsonDecode(str)
         local c = str:sub(pos,pos)
         if c == "{" then
             pos = pos + 1
-            -- color3
             if str:sub(pos, pos+9) == '"__c3"' then
                 local arrStart = str:find("%[", pos)
                 local arrEnd = str:find("%]", arrStart)
@@ -141,7 +138,6 @@ function Library:CreateWindow(config)
         currentThemeKey = self.Config.Theme
     end
 
-    -- ScreenGui
     self.ScreenGui = Instance.new("ScreenGui")
     self.ScreenGui.Name = "MenuLibrary_" .. self.Name
     self.ScreenGui.ResetOnSpawn = false
@@ -149,7 +145,6 @@ function Library:CreateWindow(config)
     self.ScreenGui.DisplayOrder = 50
     self.ScreenGui.Parent = PlayerGui
 
-    -- Wrapper
     self.Wrapper = Instance.new("Frame")
     self.Wrapper.Name = "Wrapper"
     self.Wrapper.BackgroundTransparency = 1
@@ -158,7 +153,6 @@ function Library:CreateWindow(config)
     self.Wrapper.Size = UDim2.new(0, 0, 0, 0)
     self.Wrapper.Parent = self.ScreenGui
 
-    -- Glow (под окном)
     self.GlowHolder = Instance.new("Frame")
     self.GlowHolder.BackgroundTransparency = 1
     self.GlowHolder.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -192,7 +186,6 @@ function Library:CreateWindow(config)
     self.WindowSize = Vector2.new(560, 380)
     self:_syncGlowSize()
 
-    -- пульсация
     task.spawn(function()
         while self.GlowHolder.Parent do
             for _, l in ipairs(self.GlowLayers) do
@@ -210,7 +203,6 @@ function Library:CreateWindow(config)
         end
     end)
 
-    -- Main
     self.Main = Instance.new("Frame")
     self.Main.Name = "Window"
     self.Main.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -237,7 +229,6 @@ function Library:CreateWindow(config)
     self.StrokeGradient = Instance.new("UIGradient")
     self.StrokeGradient.Parent = self.MainStroke
 
-    -- TitleBar
     self.TitleBar = Instance.new("Frame")
     self.TitleBar.Name = "TitleBar"
     self.TitleBar.BackgroundColor3 = BG_PANEL
@@ -274,7 +265,6 @@ function Library:CreateWindow(config)
     titleText.Parent = self.TitleBar
 
     local closeBtn = Instance.new("TextButton")
-    closeBtn.Name = "CloseButton"
     closeBtn.BackgroundColor3 = Color3.fromRGB(235, 80, 90)
     closeBtn.AutoButtonColor = false
     closeBtn.Size = UDim2.new(0, 26, 0, 26)
@@ -292,7 +282,6 @@ function Library:CreateWindow(config)
 
     closeBtn.MouseButton1Click:Connect(function() self:Toggle(false) end)
 
-    -- Sidebar
     self.Sidebar = Instance.new("Frame")
     self.Sidebar.Name = "Sidebar"
     self.Sidebar.BackgroundColor3 = BG_PANEL
@@ -309,22 +298,22 @@ function Library:CreateWindow(config)
     profileBox.ZIndex = 3
     profileBox.Parent = self.Sidebar
 
-    local avatar = Instance.new("ImageLabel")
-    avatar.Size = UDim2.new(0, 48, 0, 48)
-    avatar.Position = UDim2.new(0.5, -24, 0, 14)
-    avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 46)
-    avatar.Image = ""
-    avatar.ZIndex = 4
-    avatar.Parent = profileBox
+    self.Avatar = Instance.new("ImageLabel")
+    self.Avatar.Size = UDim2.new(0, 48, 0, 48)
+    self.Avatar.Position = UDim2.new(0.5, -24, 0, 14)
+    self.Avatar.BackgroundColor3 = Color3.fromRGB(40, 40, 46)
+    self.Avatar.Image = ""
+    self.Avatar.ZIndex = 4
+    self.Avatar.Parent = profileBox
 
     local avCorner = Instance.new("UICorner")
     avCorner.CornerRadius = UDim.new(1, 0)
-    avCorner.Parent = avatar
+    avCorner.Parent = self.Avatar
 
     self.AvatarStroke = Instance.new("UIStroke")
     self.AvatarStroke.Thickness = 2
     self.AvatarStroke.Transparency = 0.2
-    self.AvatarStroke.Parent = avatar
+    self.AvatarStroke.Parent = self.Avatar
 
     local nameLabel = Instance.new("TextLabel")
     nameLabel.BackgroundTransparency = 1
@@ -362,7 +351,6 @@ function Library:CreateWindow(config)
     tabListLayout.Padding = UDim.new(0, 6)
     tabListLayout.Parent = self.TabList
 
-    -- Content
     self.ContentArea = Instance.new("Frame")
     self.ContentArea.BackgroundTransparency = 1
     self.ContentArea.Position = UDim2.new(0, 150, 0, 42)
@@ -379,12 +367,7 @@ function Library:CreateWindow(config)
 
     self:_setupDrag()
     self:_createToggleButton()
-
-    -- конфиг — грузим флаги
     self:_loadConfig()
-
-    -- тогглы и др. сами применят флаги через task.defer
-
     self:Toggle(true)
     return self
 end
@@ -447,9 +430,7 @@ function Library:_createToggleButton()
 
     UserInputService.InputBegan:Connect(function(input, gp)
         if gp then return end
-        if input.KeyCode == HOTKEY then
-            self:Toggle(not self.Enabled)
-        end
+        if input.KeyCode == HOTKEY then self:Toggle(not self.Enabled) end
     end)
 end
 
@@ -528,7 +509,6 @@ function Library:CreateTab(nameOrConfig)
         name = nameOrConfig or "Tab"
     end
 
-    -- уникальный ключ для повторяющихся имён
     local key = name
     local idx = 2
     while self.Tabs[key] do
@@ -556,7 +536,7 @@ function Library:CreateTab(nameOrConfig)
     c.CornerRadius = UDim.new(0, 8)
     c.Parent = btn
 
-    -- иконка вкладки
+    -- ИКОНКА: ImageLabel (URL) или TextLabel (эмодзи)
     if icon then
         local iconInst
         if type(icon) == "string" and (icon:match("^rbxassetid://") or icon:match("^https?://")) then
@@ -584,7 +564,6 @@ function Library:CreateTab(nameOrConfig)
 
     self.TabButtons[key] = btn
 
-    -- Content frame
     local page = Instance.new("Frame")
     page.Name = key .. "Page"
     page.BackgroundTransparency = 1
@@ -601,10 +580,8 @@ function Library:CreateTab(nameOrConfig)
     tab.Content = page
 
     btn.MouseButton1Click:Connect(function() self:SelectTab(key) end)
-
     if not self.CurrentTab then self:SelectTab(key) end
 
-    -- === Rayfield-style методы ===
     tab.CreateButton = function(_, cfg) return self:_addButton(tab, cfg) end
     tab.CreateToggle = function(_, cfg) return self:_addToggle(tab, cfg) end
     tab.CreateSlider = function(_, cfg) return self:_addSlider(tab, cfg) end
@@ -633,15 +610,20 @@ function Library:SelectTab(key)
             BackgroundColor3 = active and theme.Accent or BG_ITEM,
             TextColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT,
         }):Play()
-        local tab = self.Tabs[k]
-        if tab and tab.Icon then
-            tab.Icon.ImageColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT
+
+        local tabData = self.Tabs[k]
+        if tabData and tabData.Icon then
+            if tabData.Icon:IsA("ImageLabel") then
+                tabData.Icon.ImageColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT
+            elseif tabData.Icon:IsA("TextLabel") then
+                tabData.Icon.TextColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT
+            end
         end
     end
 end
 
 ----------------------------------------------------------------
--- УТИЛИТЫ ДЛЯ ЭЛЕМЕНТОВ
+-- УТИЛИТЫ
 ----------------------------------------------------------------
 local function createCorner(parent, r)
     local c = Instance.new("UICorner")
@@ -760,8 +742,7 @@ function Library:_addToggle(tab, config)
 end
 
 function Library:_addSlider(tab, config)
-    local self = self
-    local min = config.Min or 0
+    local self = self    local min = config.Min or 0
     local max = config.Max or 100
     local increment = config.Increment or 1
     local suffix = config.Suffix or ""
@@ -895,8 +876,6 @@ function Library:_addDropdown(tab, config)
     else current = config.CurrentOption or options[1] end
 
     local open = false
-
-    -- главная строка
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Dropdown")
 
@@ -923,7 +902,6 @@ function Library:_addDropdown(tab, config)
     arrow.ZIndex = 4
     arrow.Parent = row
 
-    -- holder
     local holder = Instance.new("Frame")
     holder.BackgroundColor3 = BG_PANEL
     holder.BorderSizePixel = 0
@@ -1188,7 +1166,6 @@ function Library:_addColorPicker(tab, config)
     preview.Parent = row
     createCorner(preview, 6)
 
-    -- holder (HSV)
     local holder = Instance.new("Frame")
     holder.BackgroundColor3 = BG_PANEL
     holder.BorderSizePixel = 0
@@ -1207,7 +1184,6 @@ function Library:_addColorPicker(tab, config)
     holderPad.PaddingRight = UDim.new(0, 10)
     holderPad.Parent = holder
 
-    -- SV field
     local svField = Instance.new("ImageLabel")
     svField.Size = UDim2.new(1, 0, 0, 100)
     svField.BackgroundColor3 = Color3.fromRGB(255,255,255)
@@ -1252,7 +1228,6 @@ function Library:_addColorPicker(tab, config)
     svMarkerStroke.Parent = svMarker
     createCorner(svMarker, 999)
 
-    -- Hue
     local hueBar = Instance.new("ImageLabel")
     hueBar.Size = UDim2.new(1, 0, 0, 12)
     hueBar.Position = UDim2.new(0, 0, 0, 110)
@@ -1288,7 +1263,6 @@ function Library:_addColorPicker(tab, config)
     hueMarkerStroke.Transparency = 0.6
     hueMarkerStroke.Parent = hueMarker
 
-    -- HEX
     local hexBox = Instance.new("TextBox")
     hexBox.Size = UDim2.new(1, 0, 0, 24)
     hexBox.Position = UDim2.new(0, 0, 0, 130)
@@ -1431,7 +1405,7 @@ function Library:_addColorPicker(tab, config)
 end
 
 ----------------------------------------------------------------
--- ПРИМЕНЕНИЕ ТЕМЫ
+-- ТЕМА
 ----------------------------------------------------------------
 function Library:SetTheme(key)
     if not THEMES[key] then return end
@@ -1523,44 +1497,12 @@ function Library:Notify(config)
 end
 
 ----------------------------------------------------------------
--- ПЕРЕЛИВ РАМКИ + АВАТАР
+-- ПАТЧ: аватар + перелив рамки
 ----------------------------------------------------------------
-task.spawn(function()
-    local offset = 0
-    while true do
-        offset = (offset + 0.006) % 1
-        RunService.Heartbeat:Wait()
-    end
-end)
-
-local function updateAvatar(self)
-    task.spawn(function()
-        local ok, content = pcall(function()
-            return Players:GetUserThumbnailAsync(
-                LocalPlayer.UserId,
-                Enum.ThumbnailType.HeadShot,
-                Enum.ThumbnailSize.Size100x100
-            )
-        end)
-        if ok and content then
-            local av = self.Sidebar:FindFirstChild("Avatar") -- может не найтись, сохраним через реестр
-        end
-    end)
-end
-
--- Обновим аватар после создания окна (в CreateWindow аватар уже создан как локальная переменная; нужно вынести в self)
--- Проще: переопределим _addAvatarInfo для использования в CreateWindow-- МАЛЕНЬКИЙ ПАТЧ: сохраним avatar в self при создании
 local _origCreateWindow = Library.CreateWindow
 function Library:CreateWindow(config)
     local w = _origCreateWindow(self, config)
-    -- ищем avatar в sidebar
-    for _, d in ipairs(w.Sidebar:GetDescendants()) do
-        if d:IsA("ImageLabel") then
-            w._avatar = d
-            break
-        end
-    end
-    if w._avatar then
+    if w.Avatar then
         task.spawn(function()
             local ok, content = pcall(function()
                 return Players:GetUserThumbnailAsync(
@@ -1569,11 +1511,9 @@ function Library:CreateWindow(config)
                     Enum.ThumbnailSize.Size100x100
                 )
             end)
-            if ok and content then w._avatar.Image = content end
+            if ok and content then w.Avatar.Image = content end
         end)
     end
-
-    -- перелив рамки
     task.spawn(function()
         local offset = 0
         while w.ScreenGui and w.ScreenGui.Parent do
@@ -1582,7 +1522,6 @@ function Library:CreateWindow(config)
             RunService.Heartbeat:Wait()
         end
     end)
-
     return w
 end
 

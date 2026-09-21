@@ -1,4 +1,4 @@
--- HIros UI Library v4.1
+-- HIros UI Library v4.2 (working keybind + hotkey system)
 -- Loader: local HIros = loadstring(game:HttpGet(".../library.lua"))()
 
 local Players          = game:GetService("Players")
@@ -13,8 +13,6 @@ local BRAND = "HIros"
 
 local Library = {}
 Library.__index = Library
-
--- ТЕМЫ
 
 local THEMES = {
     Blue   = { Name = "Синяя",   Accent = Color3.fromRGB(88, 101, 242), AccentLight = Color3.fromRGB(160, 170, 255) },
@@ -32,11 +30,10 @@ local BG_HOVER   = Color3.fromRGB(44, 44, 52)
 local TEXT_COLOR = Color3.fromRGB(235, 235, 240)
 local SUBTEXT    = Color3.fromRGB(150, 150, 160)
 
-local HOTKEY = Enum.KeyCode.RightShift
+local DEFAULT_HOTKEY = Enum.KeyCode.RightShift
 local CONFIG_FILE = "MenuLibrary_config.json"
 
--- JSON (мини)
-
+-- JSON мини
 local function jsonEncode(tbl)
     local function enc(v)
         local t = type(v)
@@ -119,8 +116,7 @@ local function jsonDecode(str)
     return ok and r or {}
 end
 
--- СОЗДАНИЕ ОКНА
-
+-- создание окна
 function Library:CreateWindow(config)
     local self = setmetatable({}, Library)
     self.Config = config or {}
@@ -133,6 +129,7 @@ function Library:CreateWindow(config)
     self.Elements = {}
     self._saveToken = 0
     self._scrollBars = {}
+    self._hotkey = DEFAULT_HOTKEY
 
     if self.Config.Theme and THEMES[self.Config.Theme] then
         currentThemeKey = self.Config.Theme
@@ -398,8 +395,15 @@ function Library:CreateWindow(config)
     self.ContentPadding.Parent = self.ContentArea
 
     self:_setupDrag()
-    self:_createToggleButton()
     self:_loadConfig()
+
+    -- восстановить hotkey из конфига
+    if self.Flags["_window_hotkey"] and type(self.Flags["_window_hotkey"]) == "string" then
+        local ok, kc = pcall(function() return Enum.KeyCode[self.Flags["_window_hotkey"]] end)
+        if ok and kc then self._hotkey = kc end
+    end
+
+    self:_createToggleButton()
     self:Toggle(true)
     return self
 end
@@ -462,7 +466,8 @@ function Library:_createToggleButton()
 
     UserInputService.InputBegan:Connect(function(input, gp)
         if gp then return end
-        if input.KeyCode == HOTKEY then self:Toggle(not self.Enabled) end
+        local key = self._hotkey or DEFAULT_HOTKEY
+        if input.KeyCode == key then self:Toggle(not self.Enabled) end
     end)
 end
 
@@ -495,8 +500,22 @@ function Library:Destroy()
     if self.ToggleBtn then self.ToggleBtn:Destroy() end
 end
 
--- КОНФИГ
+-- НОВОЕ: сменить hotkey в реальном времени
+function Library:SetHotkey(key)
+    if not key then return end
+    if typeof(key) == "string" then
+        local ok, kc = pcall(function() return Enum.KeyCode[key] end)
+        if ok and kc then key = kc end
+    end
+    self._hotkey = key
+    self:SetFlag("_window_hotkey", key.Name)
+end
 
+function Library:GetHotkey()
+    return self._hotkey or DEFAULT_HOTKEY
+end
+
+-- КОНФИГ
 function Library:_loadConfig()
     if type(readfile) ~= "function" or type(isfile) ~= "function" then return end
     if not isfile(CONFIG_FILE) then return end
@@ -528,7 +547,6 @@ function Library:SaveConfig() self:_saveConfig() end
 function Library:LoadConfig() self:_loadConfig() end
 
 -- ТАБЫ
-
 function Library:CreateTab(nameOrConfig)
     local self = self
     local name, icon
@@ -666,7 +684,6 @@ function Library:SelectTab(key)
 end
 
 -- УТИЛИТЫ
-
 local function createCorner(parent, r)
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, r or 8)
@@ -708,7 +725,6 @@ local function addHover(row)
 end
 
 -- ЭЛЕМЕНТЫ
-
 function Library:_addButton(tab, config)
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Button")
@@ -1194,8 +1210,7 @@ function Library:_addSection(tab, config)
     return wrap
 end
 
--- KEYBIND (починен)
-
+-- KEYBIND
 function Library:_addKeybind(tab, config)
     local self = self
     local flag = config.Flag
@@ -1304,7 +1319,6 @@ function Library:_addKeybind(tab, config)
 end
 
 -- PARAGRAPH
-
 function Library:_addParagraph(tab, config)
     local card = Instance.new("Frame")
     card.BackgroundColor3 = BG_ITEM
@@ -1361,7 +1375,6 @@ function Library:_addParagraph(tab, config)
 end
 
 -- COLORPICKER
-
 function Library:_addColorPicker(tab, config)
     local self = self
     local flag = config.Flag
@@ -1623,7 +1636,6 @@ function Library:_addColorPicker(tab, config)
 end
 
 -- ТЕМА
-
 function Library:SetTheme(key)
     if not THEMES[key] then return end
     currentThemeKey = key
@@ -1663,7 +1675,6 @@ function Library:SetTheme(key)
 end
 
 -- NOTIFY
-
 function Library:Notify(config)
     local notify = Instance.new("Frame")
     notify.Size = UDim2.new(0, 280, 0, 70)
@@ -1719,7 +1730,6 @@ function Library:Notify(config)
 end
 
 -- ПАТЧ: аватар + перелив рамки
-
 local _origCreateWindow = Library.CreateWindow
 function Library:CreateWindow(config)
     local w = _origCreateWindow(self, config)

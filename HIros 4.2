@@ -1,4 +1,4 @@
--- HIros UI Library v4.2 (working keybind + hotkey system)
+-- HIros UI Library v4.3
 -- Loader: local HIros = loadstring(game:HttpGet(".../library.lua"))()
 
 local Players          = game:GetService("Players")
@@ -33,7 +33,7 @@ local SUBTEXT    = Color3.fromRGB(150, 150, 160)
 local DEFAULT_HOTKEY = Enum.KeyCode.RightShift
 local CONFIG_FILE = "MenuLibrary_config.json"
 
--- JSON мини
+-- JSON
 local function jsonEncode(tbl)
     local function enc(v)
         local t = type(v)
@@ -116,7 +116,7 @@ local function jsonDecode(str)
     return ok and r or {}
 end
 
--- создание окна
+-- CREATE WINDOW
 function Library:CreateWindow(config)
     local self = setmetatable({}, Library)
     self.Config = config or {}
@@ -175,7 +175,7 @@ function Library:CreateWindow(config)
         layer.ZIndex = 0
         layer.Parent = self.GlowHolder
         local corner = Instance.new("UICorner")
-        corner.CornerRadius = UDim.new(0, 16 + cfg.padding * 0.6)
+        corner.CornerRadius = UDim.new(0, 18 + cfg.padding * 0.6)
         corner.Parent = layer
         table.insert(self.GlowLayers, { instance = layer, config = cfg })
     end
@@ -183,18 +183,23 @@ function Library:CreateWindow(config)
     self.WindowSize = Vector2.new(560, 380)
     self:_syncGlowSize()
 
+    -- пульсация только когда меню открыто
     task.spawn(function()
         while self.GlowHolder.Parent do
-            for _, l in ipairs(self.GlowLayers) do
-                TweenService:Create(l.instance, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-                    BackgroundTransparency = math.clamp(l.config.transparency + 0.05, 0, 1),
-                }):Play()
+            if self.Enabled then
+                for _, l in ipairs(self.GlowLayers) do
+                    TweenService:Create(l.instance, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+                        BackgroundTransparency = math.clamp(l.config.transparency + 0.05, 0, 1),
+                    }):Play()
+                end
             end
             task.wait(1.8)
-            for _, l in ipairs(self.GlowLayers) do
-                TweenService:Create(l.instance, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-                    BackgroundTransparency = l.config.transparency,
-                }):Play()
+            if self.Enabled then
+                for _, l in ipairs(self.GlowLayers) do
+                    TweenService:Create(l.instance, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+                        BackgroundTransparency = l.config.transparency,
+                    }):Play()
+                end
             end
             task.wait(1.8)
         end
@@ -215,7 +220,7 @@ function Library:CreateWindow(config)
     self.Main.Parent = self.Wrapper
 
     local mainCorner = Instance.new("UICorner")
-    mainCorner.CornerRadius = UDim.new(0, 16)
+    mainCorner.CornerRadius = UDim.new(0, 18)
     mainCorner.Parent = self.Main
 
     self.MainStroke = Instance.new("UIStroke")
@@ -253,7 +258,7 @@ function Library:CreateWindow(config)
     self.TitleBar.Parent = self.Main
 
     local tbCorner = Instance.new("UICorner")
-    tbCorner.CornerRadius = UDim.new(0, 16)
+    tbCorner.CornerRadius = UDim.new(0, 18)
     tbCorner.Parent = self.TitleBar
 
     local tbPatch = Instance.new("Frame")
@@ -291,7 +296,7 @@ function Library:CreateWindow(config)
     closeBtn.Parent = self.TitleBar
 
     local cbCorner = Instance.new("UICorner")
-    cbCorner.CornerRadius = UDim.new(0, 8)
+    cbCorner.CornerRadius = UDim.new(0, 10)
     cbCorner.Parent = closeBtn
 
     closeBtn.MouseButton1Click:Connect(function() self:Toggle(false) end)
@@ -397,7 +402,6 @@ function Library:CreateWindow(config)
     self:_setupDrag()
     self:_loadConfig()
 
-    -- восстановить hotkey из конфига
     if self.Flags["_window_hotkey"] and type(self.Flags["_window_hotkey"]) == "string" then
         local ok, kc = pcall(function() return Enum.KeyCode[self.Flags["_window_hotkey"]] end)
         if ok and kc then self._hotkey = kc end
@@ -476,16 +480,34 @@ function Library:Toggle(enabled)
     if enabled then
         self.Main.Visible = true
         self.GlowHolder.Visible = true
+
+        for _, l in ipairs(self.GlowLayers) do
+            l.instance.BackgroundTransparency = l.config.transparency
+        end
+
         self.Main.Size = UDim2.new(0, self.WindowSize.X, 0, 0)
         TweenService:Create(self.Main, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
             Size = UDim2.new(0, self.WindowSize.X, 0, self.WindowSize.Y),
         }):Play()
         self:_syncGlowSize()
+
+        for _, l in ipairs(self.GlowLayers) do
+            TweenService:Create(l.instance, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                BackgroundTransparency = l.config.transparency,
+            }):Play()
+        end
     else
         local t = TweenService:Create(self.Main, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
             Size = UDim2.new(0, self.WindowSize.X, 0, 0),
         })
         t:Play()
+
+        for _, l in ipairs(self.GlowLayers) do
+            TweenService:Create(l.instance, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                BackgroundTransparency = 1,
+            }):Play()
+        end
+
         t.Completed:Connect(function()
             if not self.Enabled then
                 self.Main.Visible = false
@@ -500,7 +522,6 @@ function Library:Destroy()
     if self.ToggleBtn then self.ToggleBtn:Destroy() end
 end
 
--- НОВОЕ: сменить hotkey в реальном времени
 function Library:SetHotkey(key)
     if not key then return end
     if typeof(key) == "string" then
@@ -515,7 +536,6 @@ function Library:GetHotkey()
     return self._hotkey or DEFAULT_HOTKEY
 end
 
--- КОНФИГ
 function Library:_loadConfig()
     if type(readfile) ~= "function" or type(isfile) ~= "function" then return end
     if not isfile(CONFIG_FILE) then return end
@@ -546,7 +566,7 @@ end
 function Library:SaveConfig() self:_saveConfig() end
 function Library:LoadConfig() self:_loadConfig() end
 
--- ТАБЫ
+-- CREATE TAB
 function Library:CreateTab(nameOrConfig)
     local self = self
     local name, icon
@@ -573,7 +593,7 @@ function Library:CreateTab(nameOrConfig)
     btn.BackgroundColor3 = BG_ITEM
     btn.AutoButtonColor = false
     btn.Font = Enum.Font.GothamMedium
-    btn.Text = icon and ("      " .. name) or ("   " .. name)
+    btn.Text = ""
     btn.TextColor3 = SUBTEXT
     btn.TextSize = 13
     btn.TextXAlignment = Enum.TextXAlignment.Left
@@ -581,9 +601,10 @@ function Library:CreateTab(nameOrConfig)
     btn.Parent = self.TabList
 
     local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 8)
+    c.CornerRadius = UDim.new(0, 10)
     c.Parent = btn
 
+    local textOffset = 12
     if icon then
         local iconInst
         if type(icon) == "string" and (icon:match("^rbxassetid://") or icon:match("^https?://")) then
@@ -596,18 +617,35 @@ function Library:CreateTab(nameOrConfig)
             iconInst.Parent = btn
         else
             iconInst = Instance.new("TextLabel")
-            iconInst.Size = UDim2.new(0, 18, 0, 18)
-            iconInst.Position = UDim2.new(0, 10, 0.5, -9)
+            iconInst.Size = UDim2.new(0, 20, 0, 20)
+            iconInst.Position = UDim2.new(0, 10, 0.5, -10)
             iconInst.BackgroundTransparency = 1
             iconInst.Font = Enum.Font.GothamBold
             iconInst.Text = tostring(icon)
             iconInst.TextColor3 = Color3.fromRGB(255,255,255)
-            iconInst.TextSize = 13
+            iconInst.TextSize = 14
+            iconInst.TextXAlignment = Enum.TextXAlignment.Center
             iconInst.ZIndex = 5
             iconInst.Parent = btn
         end
         tab.Icon = iconInst
+        textOffset = 36
     end
+
+    local label = Instance.new("TextLabel")
+    label.Name = "TabLabel"
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, textOffset, 0, 0)
+    label.Size = UDim2.new(1, -textOffset - 6, 1, 0)
+    label.Font = Enum.Font.GothamMedium
+    label.Text = name
+    label.TextColor3 = SUBTEXT
+    label.TextSize = 13
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextTruncate = Enum.TextTruncate.AtEnd
+    label.ZIndex = 5
+    label.Parent = btn
+    tab.Label = label
 
     self.TabButtons[key] = btn
 
@@ -669,24 +707,30 @@ function Library:SelectTab(key)
         local active = (k == key)
         TweenService:Create(btn, TweenInfo.new(0.15), {
             BackgroundColor3 = active and theme.Accent or BG_ITEM,
-            TextColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT,
         }):Play()
 
         local tabData = self.Tabs[k]
-        if tabData and tabData.Icon then
-            if tabData.Icon:IsA("ImageLabel") then
-                tabData.Icon.ImageColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT
-            elseif tabData.Icon:IsA("TextLabel") then
-                tabData.Icon.TextColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT
+        if tabData then
+            if tabData.Label then
+                TweenService:Create(tabData.Label, TweenInfo.new(0.15), {
+                    TextColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT,
+                }):Play()
+            end
+            if tabData.Icon then
+                if tabData.Icon:IsA("ImageLabel") then
+                    tabData.Icon.ImageColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT
+                elseif tabData.Icon:IsA("TextLabel") then
+                    tabData.Icon.TextColor3 = active and Color3.fromRGB(255,255,255) or SUBTEXT
+                end
             end
         end
     end
 end
 
--- УТИЛИТЫ
+-- UTILS
 local function createCorner(parent, r)
     local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 8)
+    c.CornerRadius = UDim.new(0, r or 10)
     c.Parent = parent
     return c
 end
@@ -697,15 +741,14 @@ local function makeRowBase(parent, order, height)
     row.AutoButtonColor = false
     row.BorderSizePixel = 0
     row.Size = UDim2.new(1, 0, 0, height or 40)
-    row.LayoutOrder = order or 0
-    row.Font = Enum.Font.GothamMedium
+    row.LayoutOrder = order or 0    row.Font = Enum.Font.GothamMedium
     row.Text = ""
     row.TextColor3 = TEXT_COLOR
     row.TextSize = 13
     row.TextXAlignment = Enum.TextXAlignment.Left
     row.ZIndex = 4
     row.Parent = parent
-    createCorner(row, 8)
+    createCorner(row, 10)
     return row
 end
 
@@ -724,7 +767,7 @@ local function addHover(row)
     end)
 end
 
--- ЭЛЕМЕНТЫ
+-- ELEMENTS
 function Library:_addButton(tab, config)
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Button")
@@ -822,7 +865,7 @@ function Library:_addSlider(tab, config)
     row.LayoutOrder = config.Order or 0
     row.ZIndex = 4
     row.Parent = tab.Content
-    createCorner(row, 8)
+    createCorner(row, 10)
 
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
@@ -976,7 +1019,7 @@ function Library:_addDropdown(tab, config)
     holder.LayoutOrder = (config.Order or 0) + 0.5
     holder.ZIndex = 4
     holder.Parent = tab.Content
-    createCorner(holder, 8)
+    createCorner(holder, 10)
 
     local holderLayout = Instance.new("UIListLayout")
     holderLayout.Padding = UDim.new(0, 4)
@@ -1037,7 +1080,7 @@ function Library:_addDropdown(tab, config)
         optBtn.LayoutOrder = i
         optBtn.ZIndex = 5
         optBtn.Parent = holder
-        createCorner(optBtn, 6)
+        createCorner(optBtn, 8)
 
         optBtn.MouseEnter:Connect(function()
             if current ~= opt then
@@ -1118,7 +1161,7 @@ function Library:_addInput(tab, config)
     box.ClearTextOnFocus = false
     box.ZIndex = 4
     box.Parent = row
-    createCorner(box, 6)
+    createCorner(box, 8)
 
     local pad = Instance.new("UIPadding")
     pad.PaddingLeft = UDim.new(0, 8)
@@ -1210,7 +1253,6 @@ function Library:_addSection(tab, config)
     return wrap
 end
 
--- KEYBIND
 function Library:_addKeybind(tab, config)
     local self = self
     local flag = config.Flag
@@ -1249,7 +1291,7 @@ function Library:_addKeybind(tab, config)
     keyBadge.TextSize = 12
     keyBadge.ZIndex = 5
     keyBadge.Parent = row
-    createCorner(keyBadge, 6)
+    createCorner(keyBadge, 8)
 
     local badgeStroke = Instance.new("UIStroke")
     badgeStroke.Color = THEMES[currentThemeKey].Accent
@@ -1318,7 +1360,6 @@ function Library:_addKeybind(tab, config)
     return obj
 end
 
--- PARAGRAPH
 function Library:_addParagraph(tab, config)
     local card = Instance.new("Frame")
     card.BackgroundColor3 = BG_ITEM
@@ -1328,7 +1369,7 @@ function Library:_addParagraph(tab, config)
     card.LayoutOrder = config.Order or 0
     card.ZIndex = 4
     card.Parent = tab.Content
-    createCorner(card, 8)
+    createCorner(card, 10)
 
     local pad = Instance.new("UIPadding")
     pad.PaddingTop = UDim.new(0, 10)
@@ -1374,7 +1415,6 @@ function Library:_addParagraph(tab, config)
     return card
 end
 
--- COLORPICKER
 function Library:_addColorPicker(tab, config)
     local self = self
     local flag = config.Flag
@@ -1395,7 +1435,7 @@ function Library:_addColorPicker(tab, config)
     preview.BorderSizePixel = 0
     preview.ZIndex = 5
     preview.Parent = row
-    createCorner(preview, 6)
+    createCorner(preview, 8)
 
     local holder = Instance.new("Frame")
     holder.BackgroundColor3 = BG_PANEL
@@ -1406,7 +1446,7 @@ function Library:_addColorPicker(tab, config)
     holder.LayoutOrder = (config.Order or 0) + 0.5
     holder.ZIndex = 4
     holder.Parent = tab.Content
-    createCorner(holder, 8)
+    createCorner(holder, 10)
 
     local holderPad = Instance.new("UIPadding")
     holderPad.PaddingTop = UDim.new(0, 10)
@@ -1421,7 +1461,7 @@ function Library:_addColorPicker(tab, config)
     svField.BorderSizePixel = 0
     svField.ZIndex = 5
     svField.Parent = holder
-    createCorner(svField, 6)
+    createCorner(svField, 8)
 
     local svGrad = Instance.new("UIGradient")
     svGrad.Color = ColorSequence.new({
@@ -1436,7 +1476,7 @@ function Library:_addColorPicker(tab, config)
     svDark.BorderSizePixel = 0
     svDark.ZIndex = 6
     svDark.Parent = svField
-    createCorner(svDark, 6)
+    createCorner(svDark, 8)
 
     local svDarkGrad = Instance.new("UIGradient")
     svDarkGrad.Rotation = 90
@@ -1506,7 +1546,7 @@ function Library:_addColorPicker(tab, config)
     hexBox.ClearTextOnFocus = false
     hexBox.ZIndex = 5
     hexBox.Parent = holder
-    createCorner(hexBox, 6)
+    createCorner(hexBox, 8)
 
     local hexPad = Instance.new("UIPadding")
     hexPad.PaddingLeft = UDim.new(0, 8)
@@ -1635,7 +1675,6 @@ function Library:_addColorPicker(tab, config)
     return obj
 end
 
--- ТЕМА
 function Library:SetTheme(key)
     if not THEMES[key] then return end
     currentThemeKey = key
@@ -1674,7 +1713,6 @@ function Library:SetTheme(key)
     end
 end
 
--- NOTIFY
 function Library:Notify(config)
     local notify = Instance.new("Frame")
     notify.Size = UDim2.new(0, 280, 0, 70)
@@ -1683,7 +1721,7 @@ function Library:Notify(config)
     notify.BorderSizePixel = 0
     notify.ZIndex = 999
     notify.Parent = self.ScreenGui
-    createCorner(notify, 10)
+    createCorner(notify, 12)
 
     local stroke = Instance.new("UIStroke")
     stroke.Color = THEMES[currentThemeKey].Accent
@@ -1729,7 +1767,6 @@ function Library:Notify(config)
     return notify
 end
 
--- ПАТЧ: аватар + перелив рамки
 local _origCreateWindow = Library.CreateWindow
 function Library:CreateWindow(config)
     local w = _origCreateWindow(self, config)

@@ -1,5 +1,6 @@
--- MenuLibrary v3.1 (Rayfield-style + Dropdown + Slider + Input + Section + Config)
--- Loader: local Library = loadstring(game:HttpGet(".../library.lua"))()
+-- HIros UI Library v4.0
+-- Фреймворк для меню в Roblox — сделано под "библиотеку от нейросетей"
+-- Loader: local HIros = loadstring(game:HttpGet(".../library.lua"))()
 
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
@@ -8,6 +9,8 @@ local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+local BRAND = "HIros"
 
 local Library = {}
 Library.__index = Library
@@ -125,7 +128,7 @@ end
 function Library:CreateWindow(config)
     local self = setmetatable({}, Library)
     self.Config = config or {}
-    self.Name = self.Config.Name or "Menu Library"
+    self.Name = self.Config.Name or BRAND
     self.Enabled = false
     self.Tabs = {}
     self.TabButtons = {}
@@ -139,7 +142,7 @@ function Library:CreateWindow(config)
     end
 
     self.ScreenGui = Instance.new("ScreenGui")
-    self.ScreenGui.Name = "MenuLibrary_" .. self.Name
+    self.ScreenGui.Name = "HIros_" .. self.Name
     self.ScreenGui.ResetOnSpawn = false
     self.ScreenGui.IgnoreGuiInset = true
     self.ScreenGui.DisplayOrder = 50
@@ -229,6 +232,23 @@ function Library:CreateWindow(config)
     self.StrokeGradient = Instance.new("UIGradient")
     self.StrokeGradient.Parent = self.MainStroke
 
+    -- лёгкий стеклянный блик сверху окна
+    local glassShine = Instance.new("Frame")
+    glassShine.Name = "GlassShine"
+    glassShine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    glassShine.BorderSizePixel = 0
+    glassShine.Size = UDim2.new(1, 0, 0, 90)
+    glassShine.ZIndex = 3
+    glassShine.Parent = self.Main
+
+    local shineGrad = Instance.new("UIGradient")
+    shineGrad.Rotation = 90
+    shineGrad.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.9),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    shineGrad.Parent = glassShine
+
     self.TitleBar = Instance.new("Frame")
     self.TitleBar.Name = "TitleBar"
     self.TitleBar.BackgroundColor3 = BG_PANEL
@@ -257,12 +277,13 @@ function Library:CreateWindow(config)
     titleText.Position = UDim2.new(0, 16, 0, 0)
     titleText.Size = UDim2.new(1, -100, 1, 0)
     titleText.Font = Enum.Font.GothamBold
-    titleText.Text = self.Name
+    titleText.Text = "⚡ " .. self.Name
     titleText.TextColor3 = TEXT_COLOR
     titleText.TextSize = 15
     titleText.TextXAlignment = Enum.TextXAlignment.Left
     titleText.ZIndex = 4
     titleText.Parent = self.TitleBar
+    self.TitleText = titleText
 
     local closeBtn = Instance.new("TextButton")
     closeBtn.BackgroundColor3 = Color3.fromRGB(235, 80, 90)
@@ -343,13 +364,29 @@ function Library:CreateWindow(config)
     self.TabList.Size = UDim2.new(1, -16, 1, -104)
     self.TabList.CanvasSize = UDim2.new(0, 0, 0, 0)
     self.TabList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    self.TabList.ScrollBarThickness = 2
+    self.TabList.ScrollBarThickness = 3
+    self.TabList.ScrollBarImageColor3 = THEMES[currentThemeKey].Accent
     self.TabList.ZIndex = 3
     self.TabList.Parent = self.Sidebar
+    self._scrollBars = self._scrollBars or {}
+    table.insert(self._scrollBars, self.TabList)
 
     local tabListLayout = Instance.new("UIListLayout")
     tabListLayout.Padding = UDim.new(0, 6)
     tabListLayout.Parent = self.TabList
+
+    local watermark = Instance.new("TextLabel")
+    watermark.Name = "Watermark"
+    watermark.BackgroundTransparency = 1
+    watermark.Position = UDim2.new(0, 0, 1, -18)
+    watermark.Size = UDim2.new(1, 0, 0, 16)
+    watermark.Font = Enum.Font.GothamBold
+    watermark.Text = "⚡ " .. BRAND
+    watermark.TextColor3 = SUBTEXT
+    watermark.TextTransparency = 0.35
+    watermark.TextSize = 10
+    watermark.ZIndex = 3
+    watermark.Parent = self.Sidebar
 
     self.ContentArea = Instance.new("Frame")
     self.ContentArea.BackgroundTransparency = 1
@@ -564,18 +601,31 @@ function Library:CreateTab(nameOrConfig)
 
     self.TabButtons[key] = btn
 
-    local page = Instance.new("Frame")
+    local page = Instance.new("ScrollingFrame")
     page.Name = key .. "Page"
     page.BackgroundTransparency = 1
     page.Size = UDim2.new(1, 0, 1, 0)
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.ScrollBarThickness = 3
+    page.ScrollBarImageColor3 = THEMES[currentThemeKey].Accent
+    page.ScrollingDirection = Enum.ScrollingDirection.Y
+    page.ClipsDescendants = true
     page.Visible = false
     page.ZIndex = 3
     page.Parent = self.ContentPadding
+    self._scrollBars = self._scrollBars or {}
+    table.insert(self._scrollBars, page)
 
     local layout = Instance.new("UIListLayout")
     layout.Padding = UDim.new(0, 8)
     layout.SortOrder = Enum.SortOrder.LayoutOrder
     layout.Parent = page
+
+    local pagePad = Instance.new("UIPadding")
+    pagePad.PaddingRight = UDim.new(0, 10)
+    pagePad.PaddingBottom = UDim.new(0, 4)
+    pagePad.Parent = page
 
     tab.Content = page
 
@@ -591,6 +641,8 @@ function Library:CreateTab(nameOrConfig)
     tab.CreateLabel = function(_, cfg) return self:_addLabel(tab, cfg) end
     tab.CreateDivider = function(_) return self:_addDivider(tab) end
     tab.CreateSection = function(_, cfg) return self:_addSection(tab, cfg) end
+    tab.CreateKeybind = function(_, cfg) return self:_addKeybind(tab, cfg) end
+    tab.CreateParagraph = function(_, cfg) return self:_addParagraph(tab, cfg) end
 
     return tab
 end
@@ -657,6 +709,12 @@ local function addHover(row)
     row.MouseLeave:Connect(function()
         TweenService:Create(row, TweenInfo.new(0.12), { BackgroundColor3 = BG_ITEM }):Play()
     end)
+    row.MouseButton1Down:Connect(function()
+        TweenService:Create(row, TweenInfo.new(0.08), { BackgroundColor3 = THEMES[currentThemeKey].Accent }):Play()
+    end)
+    row.MouseButton1Up:Connect(function()
+        TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = BG_HOVER }):Play()
+    end)
 end
 
 ----------------------------------------------------------------
@@ -684,6 +742,7 @@ function Library:_addToggle(tab, config)
 
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Toggle")
+    addHover(row)
 
     local track = Instance.new("Frame")
     track.Size = UDim2.new(0, 40, 0, 20)
@@ -878,6 +937,7 @@ function Library:_addDropdown(tab, config)
     local open = false
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Dropdown")
+    addHover(row)
 
     local valueLabel = Instance.new("TextLabel")
     valueLabel.BackgroundTransparency = 1
@@ -1145,6 +1205,145 @@ function Library:_addSection(tab, config)
     return wrap
 end
 
+----------------------------------------------------------------
+-- KEYBIND (нажал на плашку -> нажал нужную клавишу -> она забиндилась)
+----------------------------------------------------------------
+function Library:_addKeybind(tab, config)
+    local self = self
+    local flag = config.Flag
+    local current
+    if flag and self.Flags[flag] ~= nil then current = self.Flags[flag]
+    else current = config.CurrentKeybind end
+
+    local listening = false
+
+    local row = makeRowBase(tab.Content, config.Order, 40)
+    row.Text = "   " .. (config.Name or "Keybind")
+    addHover(row)
+
+    local keyBadge = Instance.new("TextButton")
+    keyBadge.Size = UDim2.new(0, 84, 0, 26)
+    keyBadge.Position = UDim2.new(1, -94, 0.5, -13)
+    keyBadge.BackgroundColor3 = BG_HOVER
+    keyBadge.AutoButtonColor = false
+    keyBadge.Font = Enum.Font.GothamBold
+    keyBadge.Text = current and current.Name or "None"
+    keyBadge.TextColor3 = TEXT_COLOR
+    keyBadge.TextSize = 12
+    keyBadge.ZIndex = 5
+    keyBadge.Parent = row
+    createCorner(keyBadge, 6)
+
+    local badgeStroke = Instance.new("UIStroke")
+    badgeStroke.Color = THEMES[currentThemeKey].Accent
+    badgeStroke.Transparency = 1
+    badgeStroke.Thickness = 1.5
+    badgeStroke.Parent = keyBadge
+
+    local function refresh()
+        keyBadge.Text = listening and "..." or (current and current.Name or "None")
+        badgeStroke.Transparency = listening and 0.2 or 1
+        if listening then
+            badgeStroke.Color = THEMES[currentThemeKey].Accent
+        end
+    end
+
+    local function startListening()
+        if listening then return end
+        listening = true
+        refresh()
+        local conn
+        conn = UserInputService.InputBegan:Connect(function(input, gp)
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            current = input.KeyCode
+            listening = false
+            refresh()
+            self:SetFlag(flag, current)
+            if config.Callback then config.Callback(current) end
+            conn:Disconnect()
+        end)
+    end
+
+    keyBadge.MouseButton1Click:Connect(startListening)
+    refresh()
+
+    if flag and self.Flags[flag] ~= nil and config.Callback then
+        task.defer(function() config.Callback(current) end)
+    end
+
+    local obj = {
+        Instance = row,
+        Get = function() return current end,
+        Set = function(kc)
+            current = kc
+            refresh()
+            self:SetFlag(flag, current)
+            if config.Callback then config.Callback(current) end
+        end,
+        UpdateTheme = refresh,
+    }
+    table.insert(self.Elements, { Type = "Keybind", Instance = row, UpdateTheme = refresh })
+    return obj
+end
+
+----------------------------------------------------------------
+-- PARAGRAPH (заголовок + текст, высота подстраивается сама)
+----------------------------------------------------------------
+function Library:_addParagraph(tab, config)
+    local card = Instance.new("Frame")
+    card.BackgroundColor3 = BG_ITEM
+    card.BorderSizePixel = 0
+    card.AutomaticSize = Enum.AutomaticSize.Y
+    card.Size = UDim2.new(1, 0, 0, 0)
+    card.LayoutOrder = config.Order or 0
+    card.ZIndex = 4
+    card.Parent = tab.Content
+    createCorner(card, 8)
+
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0, 10)
+    pad.PaddingBottom = UDim.new(0, 10)
+    pad.PaddingLeft = UDim.new(0, 12)
+    pad.PaddingRight = UDim.new(0, 12)
+    pad.Parent = card
+
+    local innerLayout = Instance.new("UIListLayout")
+    innerLayout.Padding = UDim.new(0, 4)
+    innerLayout.Parent = card
+
+    if config.Title then
+        local title = Instance.new("TextLabel")
+        title.BackgroundTransparency = 1
+        title.AutomaticSize = Enum.AutomaticSize.Y
+        title.Size = UDim2.new(1, 0, 0, 0)
+        title.Font = Enum.Font.GothamBold
+        title.Text = config.Title
+        title.TextColor3 = TEXT_COLOR
+        title.TextSize = 13
+        title.TextWrapped = true
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.LayoutOrder = 1
+        title.ZIndex = 5
+        title.Parent = card
+    end
+
+    local body = Instance.new("TextLabel")
+    body.BackgroundTransparency = 1
+    body.AutomaticSize = Enum.AutomaticSize.Y
+    body.Size = UDim2.new(1, 0, 0, 0)
+    body.Font = Enum.Font.Gotham
+    body.Text = config.Content or config.Text or ""
+    body.TextColor3 = SUBTEXT
+    body.TextSize = 12
+    body.TextWrapped = true
+    body.TextXAlignment = Enum.TextXAlignment.Left
+    body.LayoutOrder = 2
+    body.ZIndex = 5
+    body.Parent = card
+
+    return card
+end
+
 function Library:_addColorPicker(tab, config)
     local self = self
     local flag = config.Flag
@@ -1156,6 +1355,7 @@ function Library:_addColorPicker(tab, config)
 
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Color")
+    addHover(row)
 
     local preview = Instance.new("Frame")
     preview.Size = UDim2.new(0, 22, 0, 22)
@@ -1426,6 +1626,12 @@ function Library:SetTheme(key)
 
     if self.ToggleBtnStroke then
         TweenService:Create(self.ToggleBtnStroke, TweenInfo.new(0.3), { Color = theme.Accent }):Play()
+    end
+
+    if self._scrollBars then
+        for _, sb in ipairs(self._scrollBars) do
+            TweenService:Create(sb, TweenInfo.new(0.3), { ScrollBarImageColor3 = theme.Accent }):Play()
+        end
     end
 
     for _, el in ipairs(self.Elements) do

@@ -1,4 +1,4 @@
--- HIros UI Library v5.0 — full edition
+-- HIros UI Library v6.0 "Aurora" — full edition
 -- Loader: local HIros = loadstring(game:HttpGet(".../library.lua"))()
 
 local Players          = game:GetService("Players")
@@ -12,7 +12,7 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
 local BRAND = "HIros"
-local VERSION = "5.0"
+local VERSION = "6.0"
 
 local Library = {}
 Library.__index = Library
@@ -181,6 +181,28 @@ local function addHover(row)
     row.ClipsDescendants = true
     row.MouseEnter:Connect(function()
         TweenService:Create(row, TweenInfo.new(0.12), { BackgroundColor3 = BG_HOVER }):Play()
+        -- блик: полупрозрачная диагональная полоса пробегает слева направо
+        local sheen = Instance.new("Frame")
+        sheen.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        sheen.BorderSizePixel = 0
+        sheen.AnchorPoint = Vector2.new(0, 0.5)
+        sheen.Position = UDim2.new(-0.35, 0, 0.5, 0)
+        sheen.Size = UDim2.new(0.3, 0, 2.2, 0)
+        sheen.Rotation = 18
+        sheen.ZIndex = row.ZIndex + 15
+        sheen.Parent = row
+        local sg = Instance.new("UIGradient")
+        sg.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.5, 0.93),
+            NumberSequenceKeypoint.new(1, 1),
+        })
+        sg.Parent = sheen
+        local tw = TweenService:Create(sheen, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Position = UDim2.new(1.1, 0, 0.5, 0),
+        })
+        tw:Play()
+        tw.Completed:Connect(function() sheen:Destroy() end)
     end)
     row.MouseLeave:Connect(function()
         TweenService:Create(row, TweenInfo.new(0.12), { BackgroundColor3 = BG_ITEM }):Play()
@@ -366,8 +388,8 @@ function Library:CreateWindow(config)
     self.Main.AnchorPoint = Vector2.new(0.5, 0.5)
     self.Main.Position = UDim2.new(0.5, 0, 0.5, 0)
     self.Main.Size = UDim2.new(0, self.WindowSize.X, 0, self.WindowSize.Y)
-    self.Main.BackgroundColor3 = BG_DARK
-    self.Main.BackgroundTransparency = 0.18
+    self.Main.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    self.Main.BackgroundTransparency = 0.14
     self.Main.BorderSizePixel = 0
     self.Main.ClipsDescendants = true
     self.Main.Active = true
@@ -399,6 +421,41 @@ function Library:CreateWindow(config)
     })
     shineGrad.Parent = glassShine
 
+    -- Фон: тёмный градиент с лёгким оттенком акцентного цвета (обновляется темой)
+    self.BgGradient = Instance.new("UIGradient")
+    self.BgGradient.Rotation = 125
+    self.BgGradient.Parent = self.Main
+
+    -- Плавающие частицы за контентом (живой фон)
+    self.ParticleLayer = Instance.new("Frame")
+    self.ParticleLayer.Name = "Particles"
+    self.ParticleLayer.BackgroundTransparency = 1
+    self.ParticleLayer.Size = UDim2.new(1, 0, 1, 0)
+    self.ParticleLayer.ZIndex = 1
+    self.ParticleLayer.Parent = self.Main
+    self._particlesEnabled = (self.Config.Particles ~= false)
+    self._particles = {}
+    for i = 1, 18 do
+        local size = math.random(2, 5)
+        local dot = Instance.new("Frame")
+        dot.BackgroundColor3 = THEMES[currentThemeKey].Accent
+        dot.BackgroundTransparency = 0.8 + math.random() * 0.15
+        dot.BorderSizePixel = 0
+        dot.Size = UDim2.new(0, size, 0, size)
+        dot.Position = UDim2.new(math.random(), 0, math.random(), 0)
+        dot.ZIndex = 1
+        dot.Parent = self.ParticleLayer
+        createCorner(dot, 999)
+        table.insert(self._particles, {
+            frame = dot,
+            x = math.random(),
+            y = math.random(),
+            speed = 0.015 + math.random() * 0.03,
+            sway = math.random() * 6.28,
+            swayAmp = 0.01 + math.random() * 0.02,
+        })
+    end
+
     -- TitleBar
     self.TitleBar = Instance.new("Frame")
     self.TitleBar.BackgroundColor3 = BG_PANEL
@@ -419,6 +476,24 @@ function Library:CreateWindow(config)
     tbPatch.ZIndex = 3
     tbPatch.Parent = self.TitleBar
 
+    -- Неоновая линия под заголовком (бегущий градиент)
+    self.AccentLine = Instance.new("Frame")
+    self.AccentLine.Name = "AccentLine"
+    self.AccentLine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    self.AccentLine.BorderSizePixel = 0
+    self.AccentLine.Position = UDim2.new(0, 0, 0, 41)
+    self.AccentLine.Size = UDim2.new(1, 0, 0, 2)
+    self.AccentLine.ZIndex = 5
+    self.AccentLine.Parent = self.Main
+    self.LineGradient = Instance.new("UIGradient")
+    self.LineGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.35, 0.1),
+        NumberSequenceKeypoint.new(0.65, 0.1),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    self.LineGradient.Parent = self.AccentLine
+
     -- иконка окна
     self.TitleIcon = Instance.new("TextLabel")
     self.TitleIcon.BackgroundTransparency = 1
@@ -437,11 +512,13 @@ function Library:CreateWindow(config)
     self.TitleText.Size = UDim2.new(1, -160, 1, 0)
     self.TitleText.Font = Enum.Font.GothamBold
     self.TitleText.Text = self.Name
-    self.TitleText.TextColor3 = TEXT_COLOR
+    self.TitleText.TextColor3 = Color3.fromRGB(255, 255, 255)
     self.TitleText.TextSize = 15
     self.TitleText.TextXAlignment = Enum.TextXAlignment.Left
     self.TitleText.ZIndex = 4
     self.TitleText.Parent = self.TitleBar
+    self.TitleGradient = Instance.new("UIGradient")
+    self.TitleGradient.Parent = self.TitleText
 
     -- minimize
     local minBtn = Instance.new("TextButton")
@@ -499,9 +576,12 @@ function Library:CreateWindow(config)
     createCorner(self.Avatar, 999)
 
     self.AvatarStroke = Instance.new("UIStroke")
-    self.AvatarStroke.Thickness = 2
-    self.AvatarStroke.Transparency = 0.2
+    self.AvatarStroke.Thickness = 2.5
+    self.AvatarStroke.Color = Color3.fromRGB(255, 255, 255)
+    self.AvatarStroke.Transparency = 0.1
     self.AvatarStroke.Parent = self.Avatar
+    self.AvatarGradient = Instance.new("UIGradient")
+    self.AvatarGradient.Parent = self.AvatarStroke
 
     local nameLabel = Instance.new("TextLabel")
     nameLabel.BackgroundTransparency = 1
@@ -585,6 +665,7 @@ function Library:CreateWindow(config)
     end
 
     self:_createToggleButton()
+    self:_applyThemeVisuals()
     self:Toggle(true)
     return self
 end
@@ -634,6 +715,16 @@ end
 
 function Library:_createToggleButton()
     local self = self
+    -- пульсирующее свечение позади кнопки
+    self.ToggleGlow = Instance.new("Frame")
+    self.ToggleGlow.Size = UDim2.new(0, 62, 0, 62)
+    self.ToggleGlow.Position = UDim2.new(1, -70, 1, -70)
+    self.ToggleGlow.BackgroundColor3 = THEMES[currentThemeKey].Accent
+    self.ToggleGlow.BackgroundTransparency = 0.8
+    self.ToggleGlow.BorderSizePixel = 0
+    self.ToggleGlow.Parent = self.ScreenGui
+    createCorner(self.ToggleGlow, 999)
+
     self.ToggleBtn = Instance.new("TextButton")
     self.ToggleBtn.Size = UDim2.new(0, 46, 0, 46)
     self.ToggleBtn.Position = UDim2.new(1, -62, 1, -62)
@@ -643,12 +734,23 @@ function Library:_createToggleButton()
     self.ToggleBtn.Text = "☰"
     self.ToggleBtn.TextColor3 = TEXT_COLOR
     self.ToggleBtn.TextSize = 20
+    self.ToggleBtn.ZIndex = 2
     self.ToggleBtn.Parent = self.ScreenGui
     createCorner(self.ToggleBtn, 999)
 
     self.ToggleBtnStroke = Instance.new("UIStroke")
-    self.ToggleBtnStroke.Transparency = 0.4
+    self.ToggleBtnStroke.Transparency = 0.2
+    self.ToggleBtnStroke.Thickness = 1.5
     self.ToggleBtnStroke.Parent = self.ToggleBtn
+
+    local btnScale = Instance.new("UIScale")
+    btnScale.Parent = self.ToggleBtn
+    self.ToggleBtn.MouseEnter:Connect(function()
+        TweenService:Create(btnScale, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1.12 }):Play()
+    end)
+    self.ToggleBtn.MouseLeave:Connect(function()
+        TweenService:Create(btnScale, TweenInfo.new(0.15), { Scale = 1 }):Play()
+    end)
 
     self.ToggleBtn.MouseButton1Click:Connect(function() self:Toggle(not self.Enabled) end)
 
@@ -670,8 +772,9 @@ function Library:Toggle(enabled)
         for _, l in ipairs(self.GlowLayers) do
             l.instance.BackgroundTransparency = l.config.transparency
         end
+        self._minimized = false
         self.Main.Size = UDim2.new(0, self.WindowSize.X, 0, 0)
-        TweenService:Create(self.Main, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        TweenService:Create(self.Main, TweenInfo.new(0.42, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
             Size = UDim2.new(0, self.WindowSize.X, 0, self.WindowSize.Y),
         }):Play()
         for _, l in ipairs(self.GlowLayers) do
@@ -947,6 +1050,24 @@ function Library:CreateTab(nameOrConfig)
     btn.Parent = self.TabList
     createCorner(btn, 10)
 
+    -- лёгкий градиент для объёма
+    local btnGrad = Instance.new("UIGradient")
+    btnGrad.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 205, 215))
+    btnGrad.Rotation = 90
+    btnGrad.Parent = btn
+
+    -- индикатор активной вкладки (растёт слева)
+    local indicator = Instance.new("Frame")
+    indicator.AnchorPoint = Vector2.new(0, 0.5)
+    indicator.Position = UDim2.new(0, 3, 0.5, 0)
+    indicator.Size = UDim2.new(0, 3, 0, 0)
+    indicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    indicator.BorderSizePixel = 0
+    indicator.ZIndex = 6
+    indicator.Parent = btn
+    createCorner(indicator, 999)
+    tab.Indicator = indicator
+
     local textOffset = 12
     if icon then
         local iconInst
@@ -990,6 +1111,16 @@ function Library:CreateTab(nameOrConfig)
 
     self.TabButtons[key] = btn
 
+    -- CanvasGroup позволяет плавно скрывать/показывать всю страницу целиком
+    local group = Instance.new("CanvasGroup")
+    group.BackgroundTransparency = 1
+    group.Size = UDim2.new(1, 0, 1, 0)
+    group.GroupTransparency = 0
+    group.Visible = false
+    group.ZIndex = 3
+    group.Parent = self.ContentPadding
+    tab.Group = group
+
     local page = Instance.new("ScrollingFrame")
     page.BackgroundTransparency = 1
     page.Size = UDim2.new(1, 0, 1, 0)
@@ -998,9 +1129,8 @@ function Library:CreateTab(nameOrConfig)
     page.ScrollBarThickness = 3
     page.ScrollBarImageColor3 = THEMES[currentThemeKey].Accent
     page.ClipsDescendants = true
-    page.Visible = false
     page.ZIndex = 3
-    page.Parent = self.ContentPadding
+    page.Parent = group
     table.insert(self._scrollBars, page)
 
     local layout = Instance.new("UIListLayout")
@@ -1047,7 +1177,27 @@ function Library:SelectTab(key)
     self.CurrentTab = key
     local theme = THEMES[currentThemeKey]
 
-    for k, tab in pairs(self.Tabs) do tab.Content.Visible = (k == key) end
+    for k, tab in pairs(self.Tabs) do
+        local isNew = (k == key)
+        if isNew then
+            tab.Group.Visible = true
+            if previousTab then
+                tab.Group.GroupTransparency = 1
+                tab.Group.Position = UDim2.new(0, 0, 0, 14)
+                TweenService:Create(tab.Group, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                    GroupTransparency = 0,
+                    Position = UDim2.new(0, 0, 0, 0),
+                }):Play()
+            end
+        else
+            tab.Group.Visible = false
+        end
+        if tab.Indicator then
+            TweenService:Create(tab.Indicator, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                Size = UDim2.new(0, 3, 0, isNew and 18 or 0),
+            }):Play()
+        end
+    end
     for k, btn in pairs(self.TabButtons) do
         local active = (k == key)
         TweenService:Create(btn, TweenInfo.new(0.15), {
@@ -1246,14 +1396,28 @@ function Library:_addToggle(tab, config)
     knob.Parent = track
     createCorner(knob, 999)
 
+    -- ореол вокруг дорожки: светится, когда тумблер включён
+    local halo = Instance.new("Frame")
+    halo.AnchorPoint = Vector2.new(0.5, 0.5)
+    halo.Position = UDim2.new(0.5, 0, 0.5, 0)
+    halo.Size = UDim2.new(1, 12, 1, 12)
+    halo.BackgroundColor3 = THEMES[currentThemeKey].Accent
+    halo.BackgroundTransparency = 1
+    halo.BorderSizePixel = 0
+    halo.ZIndex = 3
+    halo.Parent = track
+    createCorner(halo, 999)
+
     local function updateVisual()
         local theme = THEMES[currentThemeKey]
         if state then
-            TweenService:Create(track, TweenInfo.new(0.15), { BackgroundColor3 = theme.Accent }):Play()
-            TweenService:Create(knob, TweenInfo.new(0.15), { Position = UDim2.new(1, -18, 0.5, -8) }):Play()
+            TweenService:Create(track, TweenInfo.new(0.2), { BackgroundColor3 = theme.Accent }):Play()
+            TweenService:Create(knob, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Position = UDim2.new(1, -18, 0.5, -8) }):Play()
+            TweenService:Create(halo, TweenInfo.new(0.25), { BackgroundColor3 = theme.Accent, BackgroundTransparency = 0.72 }):Play()
         else
-            TweenService:Create(track, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(60,60,70) }):Play()
-            TweenService:Create(knob, TweenInfo.new(0.15), { Position = UDim2.new(0, 2, 0.5, -8) }):Play()
+            TweenService:Create(track, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(60,60,70) }):Play()
+            TweenService:Create(knob, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Position = UDim2.new(0, 2, 0.5, -8) }):Play()
+            TweenService:Create(halo, TweenInfo.new(0.25), { BackgroundTransparency = 1 }):Play()
         end
     end
     updateVisual()
@@ -1358,15 +1522,40 @@ function Library:_addSlider(tab, config)
     knob.Parent = track
     createCorner(knob, 999)
 
+    local fillGrad = Instance.new("UIGradient")
+    fillGrad.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(215, 215, 225))
+    fillGrad.Rotation = 90
+    fillGrad.Parent = fill
+
+    local halo = Instance.new("Frame")
+    halo.AnchorPoint = Vector2.new(0.5, 0.5)
+    halo.Position = UDim2.new(0, 0, 0.5, 0)
+    halo.Size = UDim2.new(0, 22, 0, 22)
+    halo.BackgroundColor3 = THEMES[currentThemeKey].Accent
+    halo.BackgroundTransparency = 0.8
+    halo.BorderSizePixel = 0
+    halo.ZIndex = 6
+    halo.Parent = track
+    createCorner(halo, 999)
+
     local function updateVisual()
         local alpha = (max - min > 0) and (value - min) / (max - min) or 0
         fill.Size = UDim2.new(alpha, 0, 1, 0)
         fill.BackgroundColor3 = THEMES[currentThemeKey].Accent
         knob.Position = UDim2.new(alpha, 0, 0.5, 0)
+        halo.Position = UDim2.new(alpha, 0, 0.5, 0)
+        halo.BackgroundColor3 = THEMES[currentThemeKey].Accent
         valueLabel.Text = tostring(math.floor(value + 0.5)) .. suffix
         valueLabel.TextColor3 = THEMES[currentThemeKey].Accent
     end
     updateVisual()
+
+    local function swell(on)
+        TweenService:Create(halo, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = on and UDim2.new(0, 32, 0, 32) or UDim2.new(0, 22, 0, 22),
+            BackgroundTransparency = on and 0.6 or 0.8,
+        }):Play()
+    end
 
     local dragging = false
     local function handleInput(input)
@@ -1381,6 +1570,7 @@ function Library:_addSlider(tab, config)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
+            swell(true)
             handleInput(input)
         end
     end)
@@ -1393,6 +1583,7 @@ function Library:_addSlider(tab, config)
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging then swell(false) end
             dragging = false
         end
     end)
@@ -1922,9 +2113,20 @@ function Library:_addSection(tab, config)
     wrap.ZIndex = 4
     wrap.Parent = tab.Content
 
+    local dot = Instance.new("Frame")
+    dot.AnchorPoint = Vector2.new(0, 0.5)
+    dot.Position = UDim2.new(0, 0, 0.5, -2)
+    dot.Size = UDim2.new(0, 6, 0, 6)
+    dot.BackgroundColor3 = THEMES[currentThemeKey].Accent
+    dot.BorderSizePixel = 0
+    dot.ZIndex = 4
+    dot.Parent = wrap
+    createCorner(dot, 999)
+
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
-    label.Size = UDim2.new(1, 0, 1, 0)
+    label.Position = UDim2.new(0, 14, 0, 0)
+    label.Size = UDim2.new(1, -14, 1, -2)
     label.Font = Enum.Font.GothamBold
     label.Text = (config.Text or "Section"):upper()
     label.TextColor3 = SUBTEXT
@@ -1934,13 +2136,24 @@ function Library:_addSection(tab, config)
     label.Parent = wrap
 
     local line = Instance.new("Frame")
-    line.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    line.BackgroundTransparency = 0.9
+    line.BackgroundColor3 = THEMES[currentThemeKey].Accent
     line.BorderSizePixel = 0
     line.Position = UDim2.new(0, 0, 1, -1)
     line.Size = UDim2.new(1, 0, 0, 1)
     line.ZIndex = 4
     line.Parent = wrap
+    local lineGrad = Instance.new("UIGradient")
+    lineGrad.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.3),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    lineGrad.Parent = line
+
+    local function updateTheme()
+        dot.BackgroundColor3 = THEMES[currentThemeKey].Accent
+        line.BackgroundColor3 = THEMES[currentThemeKey].Accent
+    end
+    table.insert(self.Elements, { Type = "Section", Instance = wrap, UpdateTheme = updateTheme })
 
     return wrap
 end
@@ -2866,6 +3079,82 @@ end
 -- ============================================================
 -- THEME
 -- ============================================================
+-- Перекрашивает все декоративные элементы v6 под текущую тему
+function Library:_applyThemeVisuals()
+    local theme = THEMES[currentThemeKey]
+    local dark = BG_DARK
+    if self.BgGradient then
+        self.BgGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, dark:Lerp(theme.Accent, 0.16)),
+            ColorSequenceKeypoint.new(0.55, dark),
+            ColorSequenceKeypoint.new(1, dark:Lerp(theme.Accent, 0.07)),
+        })
+    end
+    if self.LineGradient then
+        self.LineGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, theme.Accent),
+            ColorSequenceKeypoint.new(0.5, theme.AccentLight),
+            ColorSequenceKeypoint.new(1, theme.Accent),
+        })
+    end
+    if self.TitleGradient then
+        self.TitleGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+            ColorSequenceKeypoint.new(0.5, theme.AccentLight),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255)),
+        })
+    end
+    if self.AvatarGradient then
+        self.AvatarGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, theme.Accent),
+            ColorSequenceKeypoint.new(0.5, theme.AccentLight),
+            ColorSequenceKeypoint.new(1, theme.Accent),
+        })
+    end
+    if self.ToggleGlow then
+        TweenService:Create(self.ToggleGlow, TweenInfo.new(0.3), { BackgroundColor3 = theme.Accent }):Play()
+    end
+    for _, p in ipairs(self._particles or {}) do
+        p.frame.BackgroundColor3 = theme.Accent
+    end
+    -- индикаторы и подписи вкладок остаются белыми на акцентном фоне
+end
+
+function Library:SetParticles(enabled)
+    self._particlesEnabled = enabled and true or false
+    if self.ParticleLayer then self.ParticleLayer.Visible = self._particlesEnabled end
+end
+
+-- Вызывается каждый кадр: все "живые" анимации окна в одном месте
+function Library:_animate(dt, t)
+    if self.StrokeGradient then
+        self.StrokeGradient.Offset = Vector2.new((t * 0.18) % 1, 0)
+    end
+    if self.LineGradient then
+        self.LineGradient.Offset = Vector2.new(math.sin(t * 0.9) * 0.6, 0)
+    end
+    if self.TitleGradient then
+        self.TitleGradient.Offset = Vector2.new(math.sin(t * 0.7) * 0.5, 0)
+    end
+    if self.AvatarGradient then
+        self.AvatarGradient.Rotation = (t * 60) % 360
+    end
+    if self.ToggleGlow then
+        self.ToggleGlow.BackgroundTransparency = 0.78 + math.sin(t * 2.2) * 0.1
+    end
+    if self.Enabled and self._particlesEnabled and not self._minimized then
+        for _, p in ipairs(self._particles) do
+            p.y = p.y - p.speed * dt
+            if p.y < -0.05 then
+                p.y = 1.05
+                p.x = math.random()
+            end
+            local sx = p.x + math.sin(t * 0.8 + p.sway) * p.swayAmp
+            p.frame.Position = UDim2.new(sx, 0, p.y, 0)
+        end
+    end
+end
+
 function Library:SetGlowMode(mode)
     self._glowMode = (mode == "rainbow") and "rainbow" or "theme"
     if self._glowMode == "theme" then
@@ -2881,7 +3170,7 @@ function Library:SetTheme(key)
     currentThemeKey = key
     local theme = THEMES[key]
 
-    if self.AvatarStroke then TweenService:Create(self.AvatarStroke, TweenInfo.new(0.3), { Color = theme.Accent }):Play() end
+    self:_applyThemeVisuals()
     for _, l in ipairs(self.GlowLayers or {}) do
         TweenService:Create(l.instance, TweenInfo.new(0.3), { BackgroundColor3 = theme.Accent }):Play()
     end
@@ -2975,6 +3264,20 @@ function Library:Notify(config)
     content.ZIndex = 1000
     content.Parent = notify
 
+    -- Полоска-таймер: плавно сокращается за время показа уведомления
+    local timerBar = Instance.new("Frame")
+    timerBar.Position = UDim2.new(0, 12, 1, -7)
+    timerBar.Size = UDim2.new(1, -24, 0, 3)
+    timerBar.BackgroundColor3 = accent
+    timerBar.BackgroundTransparency = 0.25
+    timerBar.BorderSizePixel = 0
+    timerBar.ZIndex = 1000
+    timerBar.Parent = notify
+    createCorner(timerBar, 999)
+    TweenService:Create(timerBar, TweenInfo.new(config.Duration or 5, Enum.EasingStyle.Linear), {
+        Size = UDim2.new(0, 0, 0, 3),
+    }):Play()
+
     -- Стек уведомлений: список активных, а не общий счётчик — так позиции
     -- остаются верными, даже если уведомления с разной длительностью
     -- закрываются не по порядку.
@@ -2984,7 +3287,7 @@ function Library:Notify(config)
     local function reflow()
         for i, n in ipairs(self._activeNotifies) do
             local targetY = 20 + (i - 1) * 78
-            TweenService:Create(n, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            TweenService:Create(n, TweenInfo.new(0.38, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
                 Position = UDim2.new(1, -300, 0, targetY),
             }):Play()
         end
@@ -3033,11 +3336,11 @@ function Library:CreateWindow(config)
         end)
     end
     task.spawn(function()
-        local offset = 0
+        local t = 0
         while w.ScreenGui and w.ScreenGui.Parent do
-            offset = (offset + 0.006) % 1
-            if w.StrokeGradient then w.StrokeGradient.Offset = Vector2.new(offset, 0) end
-            RunService.Heartbeat:Wait()
+            local dt = RunService.Heartbeat:Wait()
+            t = t + dt
+            w:_animate(dt, t)
         end
     end)
     return w

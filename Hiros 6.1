@@ -1,4 +1,4 @@
--- HIros UI Library v6.0 "Aurora" — full edition (patched)
+-- HIros UI Library v6.0 "Aurora" — full edition (patched v2)
 -- Loader: local HIros = loadstring(game:HttpGet(".../library.lua"))()
 
 local Players          = game:GetService("Players")
@@ -38,6 +38,14 @@ local SUBTEXT    = Color3.fromRGB(150, 150, 160)
 
 local DEFAULT_HOTKEY = Enum.KeyCode.RightShift
 local CONFIG_FILE_PREFIX = "MenuLibrary_config"
+
+-- [FIX #3] Рабочие звуковые ID (старые были удалены/битые)
+local SOUND_IDS = {
+    success = "rbxassetid://9120386436",
+    error   = "rbxassetid://9125402232",
+    warning = "rbxassetid://9125402232",
+    info    = "rbxassetid://9120386436",
+}
 
 -- ============================================================
 -- LIBRARY API
@@ -253,19 +261,21 @@ local function makeBadge(parent, text, color)
     return badge
 end
 
+-- [FIX #3] Играем через Loaded, чтобы мёртвые ID не спамили Output
 local function playSound(kind)
     if not SoundService then return end
     pcall(function()
-        local id
-        if kind == "success" then id = "rbxassetid://6895079853"
-        elseif kind == "error" then id = "rbxassetid://6895079929"
-        elseif kind == "warning" then id = "rbxassetid://6895079999"
-        else id = "rbxassetid://6895080031" end
+        local id = SOUND_IDS[kind] or SOUND_IDS.info
         local s = Instance.new("Sound")
         s.SoundId = id
         s.Volume = 0.4
         s.Parent = SoundService
-        s:Play()
+        local played = false
+        s.Loaded:Connect(function()
+            if played then return end
+            played = true
+            s:Play()
+        end)
         task.delay(2, function() s:Destroy() end)
     end)
 end
@@ -312,9 +322,6 @@ function Library:CreateWindow(config)
     self.Scale.Scale = 1
     self.Scale.Parent = self.Wrapper
 
-    -- [PATCH] GlowHolder перенесён внутрь Main — свечение теперь едет
-    -- за нижней анимацией сворачивания/раскрытия, а не висит на месте.
-    -- Он создаётся ПОСЛЕ Main, но ссылку держим в self.GlowHolder.
     self.GlowLayers = {}
     self.WindowSize = Vector2.new(560, 380)
 
@@ -334,8 +341,6 @@ function Library:CreateWindow(config)
 
     createCorner(self.Main, 18)
 
-    -- [PATCH] Вместо UIStroke (он не обрезается UICorner и даёт квадратный
-    -- угол) — отдельный Frame с UICorner и UIStroke внутри него.
     self.StrokeFrame = Instance.new("Frame")
     self.StrokeFrame.Name = "StrokeFrame"
     self.StrokeFrame.BackgroundTransparency = 1
@@ -354,7 +359,6 @@ function Library:CreateWindow(config)
     self.StrokeGradient = Instance.new("UIGradient")
     self.StrokeGradient.Parent = stroke
 
-    -- [PATCH] GlowHolder теперь внутри Main, а не в Wrapper
     self.GlowHolder = Instance.new("Frame")
     self.GlowHolder.BackgroundTransparency = 1
     self.GlowHolder.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -386,7 +390,7 @@ function Library:CreateWindow(config)
     self._glowMode = (self.Config.GlowMode == "rainbow") and "rainbow" or "theme"
 
     task.spawn(function()
-        while self.GlowHolder.Parent do
+        while self.GlowHolder and self.GlowHolder.Parent do
             if self.Enabled then
                 for _, l in ipairs(self.GlowLayers) do
                     TweenService:Create(l.instance, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
@@ -408,7 +412,7 @@ function Library:CreateWindow(config)
 
     task.spawn(function()
         local hue = 0
-        while self.GlowHolder.Parent do
+        while self.GlowHolder and self.GlowHolder.Parent do
             if self._glowMode == "rainbow" and self.Enabled then
                 hue = (hue + 0.0035) % 1
                 local col = Color3.fromHSV(hue, 0.85, 1)
@@ -477,7 +481,6 @@ function Library:CreateWindow(config)
     self.TitleBar.Parent = self.Main
     createCorner(self.TitleBar, 18)
 
-    -- [PATCH] Патч больше не вылезает за радиус Main (18) — сузили и сместили
     local tbPatch = Instance.new("Frame")
     tbPatch.BackgroundColor3 = BG_PANEL
     tbPatch.BackgroundTransparency = 0.15
@@ -529,7 +532,6 @@ function Library:CreateWindow(config)
     self.TitleGradient = Instance.new("UIGradient")
     self.TitleGradient.Parent = self.TitleText
 
-    -- [PATCH] minimize: эмодзи, круглая кнопка, нейтральный фон
     local minBtn = Instance.new("TextButton")
     minBtn.BackgroundColor3 = BG_HOVER
     minBtn.AutoButtonColor = false
@@ -543,7 +545,6 @@ function Library:CreateWindow(config)
     minBtn.Parent = self.TitleBar
     createCorner(minBtn, 999)
 
-    -- [PATCH] close: эмодзи, круглая кнопка
     local closeBtn = Instance.new("TextButton")
     closeBtn.BackgroundColor3 = BG_HOVER
     closeBtn.AutoButtonColor = false
@@ -677,7 +678,6 @@ function Library:CreateWindow(config)
 end
 
 function Library:_syncGlowSize()
-    -- GlowHolder теперь внутри Main — размеры берём от Main.
     local w, h
     if self.Main then
         w, h = self.Main.Size.X.Offset, self.Main.Size.Y.Offset
@@ -748,7 +748,6 @@ function Library:_createToggleButton()
     local btnScale = Instance.new("UIScale")
     btnScale.Parent = self.ToggleBtn
 
-    -- [PATCH] Hover кнопки теперь тянет за собой свечение (было статично)
     self.ToggleBtn.MouseEnter:Connect(function()
         TweenService:Create(btnScale, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1.12 }):Play()
         TweenService:Create(self.ToggleGlow, TweenInfo.new(0.15), {
@@ -777,10 +776,11 @@ end
 -- WINDOW METHODS
 -- ============================================================
 function Library:Toggle(enabled)
+    if not self.Main then return end
     self.Enabled = enabled
     if enabled then
         self.Main.Visible = true
-        self.GlowHolder.Visible = true
+        if self.GlowHolder then self.GlowHolder.Visible = true end
         for _, l in ipairs(self.GlowLayers) do
             l.instance.BackgroundTransparency = l.config.transparency
         end
@@ -805,9 +805,9 @@ function Library:Toggle(enabled)
             }):Play()
         end
         t.Completed:Connect(function()
-            if not self.Enabled then
+            if not self.Enabled and self.Main then
                 self.Main.Visible = false
-                self.GlowHolder.Visible = false
+                if self.GlowHolder then self.GlowHolder.Visible = false end
             end
         end)
     end
@@ -834,6 +834,7 @@ function Library:GetHotkey()
 end
 
 function Library:Minimize()
+    if not self.Main then return end
     if self._minimized then
         self._minimized = false
         TweenService:Create(self.Main, TweenInfo.new(0.25), { Size = UDim2.new(0, self.WindowSize.X, 0, self.WindowSize.Y) }):Play()
@@ -862,6 +863,7 @@ function Library:SetAccentColor(color)
 end
 
 function Library:Confirm(config)
+    config = config or {}
     local backdrop = Instance.new("TextButton")
     backdrop.Size = UDim2.new(1, 0, 1, 0)
     backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
@@ -1291,6 +1293,7 @@ function Library:_attachTooltip(row, text)
 end
 
 function Library:_addButton(tab, config)
+    config = config or {}
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Button")
     addHover(row)
@@ -1343,6 +1346,7 @@ function Library:_addButton(tab, config)
 end
 
 function Library:_addToggle(tab, config)
+    config = config or {}
     local self = self
     local flag = config.Flag
     local state
@@ -1453,6 +1457,7 @@ function Library:_addToggle(tab, config)
 end
 
 function Library:_addSlider(tab, config)
+    config = config or {}
     local self = self
     local min = config.Min or 0
     local max = config.Max or 100
@@ -1628,6 +1633,7 @@ function Library:_addSlider(tab, config)
 end
 
 function Library:_addDropdown(tab, config)
+    config = config or {}
     local self = self
     local flag = config.Flag
     local options = config.Options or {}
@@ -1767,6 +1773,7 @@ function Library:_addDropdown(tab, config)
 end
 
 function Library:_addMultiDropdown(tab, config)
+    config = config or {}
     local self = self
     local flag = config.Flag
     local options = config.Options or {}
@@ -1871,7 +1878,6 @@ function Library:_addMultiDropdown(tab, config)
         optBtn.Parent = holder
         createCorner(optBtn, 8)
 
-        -- [FIX] было: selected[opt] = not selected[opt] or nil (давало false вместо nil)
         optBtn.MouseButton1Click:Connect(function()
             if selected[opt] then selected[opt] = nil else selected[opt] = true end
             update()
@@ -1906,6 +1912,7 @@ function Library:_addMultiDropdown(tab, config)
 end
 
 function Library:_addInput(tab, config)
+    config = config or {}
     local self = self
     local flag = config.Flag
     local initial
@@ -1961,6 +1968,7 @@ function Library:_addInput(tab, config)
 end
 
 function Library:_addTextBox(tab, config)
+    config = config or {}
     local self = self
     local flag = config.Flag
     local lines = config.Lines or 5
@@ -2029,6 +2037,7 @@ function Library:_addTextBox(tab, config)
 end
 
 function Library:_addLabel(tab, config)
+    config = config or {}
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
     label.Size = UDim2.new(1, 0, 0, 22)
@@ -2045,10 +2054,11 @@ function Library:_addLabel(tab, config)
 end
 
 function Library:_addDivider(tab, config)
+    config = config or {}
     local wrap = Instance.new("Frame")
     wrap.BackgroundTransparency = 1
     wrap.Size = UDim2.new(1, 0, 0, 9)
-    wrap.LayoutOrder = (config and config.Order) or 0
+    wrap.LayoutOrder = config.Order or 0
     wrap.ZIndex = 4
     wrap.Parent = tab.Content
 
@@ -2066,6 +2076,7 @@ function Library:_addDivider(tab, config)
 end
 
 function Library:_addDividerText(tab, config)
+    config = config or {}
     local wrap = Instance.new("Frame")
     wrap.BackgroundTransparency = 1
     wrap.Size = UDim2.new(1, 0, 0, 20)
@@ -2106,6 +2117,7 @@ function Library:_addDividerText(tab, config)
 end
 
 function Library:_addSection(tab, config)
+    config = config or {}
     local wrap = Instance.new("Frame")
     wrap.BackgroundTransparency = 1
     wrap.Size = UDim2.new(1, 0, 0, 26)
@@ -2159,6 +2171,7 @@ function Library:_addSection(tab, config)
 end
 
 function Library:_addKeybind(tab, config)
+    config = config or {}
     local self = self
     local flag = config.Flag
 
@@ -2213,9 +2226,6 @@ function Library:_addKeybind(tab, config)
         refresh()
     end
 
-    -- [FIX] было: if listening then stopListen() return end — из-за чего
-    -- первый клик по бейджу ничего не делал. Теперь сначала проверяем,
-    -- что не слушаем, и только потом стартуем.
     local function startListen()
         if listening then stopListen() return end
         listening = true
@@ -2249,6 +2259,7 @@ function Library:_addKeybind(tab, config)
 end
 
 function Library:_addParagraph(tab, config)
+    config = config or {}
     local card = Instance.new("Frame")
     card.BackgroundColor3 = BG_ITEM
     card.BorderSizePixel = 0
@@ -2304,6 +2315,7 @@ function Library:_addParagraph(tab, config)
 end
 
 function Library:_addProgressBar(tab, config)
+    config = config or {}
     local self = self
     local min = config.Min or 0
     local max = config.Max or 100
@@ -2335,7 +2347,7 @@ function Library:_addProgressBar(tab, config)
     valueLabel.Position = UDim2.new(1, -80, 0, 0)
     valueLabel.Size = UDim2.new(0, 68, 0, 22)
     valueLabel.Font = Enum.Font.GothamBold
-    valueLabel.Text = string.format("%d%%", math.floor((value - min) / (max - min) * 100))
+    valueLabel.Text = string.format("%d%%", math.floor((value - min) / math.max(1, max - min) * 100))
     valueLabel.TextColor3 = THEMES[currentThemeKey].Accent
     valueLabel.TextSize = 13
     valueLabel.TextXAlignment = Enum.TextXAlignment.Right
@@ -2401,6 +2413,7 @@ function Library:_addProgressBar(tab, config)
 end
 
 function Library:_addStepper(tab, config)
+    config = config or {}
     local self = self
     local min = config.Min or 0
     local max = config.Max or 10
@@ -2499,6 +2512,7 @@ function Library:_addStepper(tab, config)
 end
 
 function Library:_addRadioGroup(tab, config)
+    config = config or {}
     local self = self
     local flag = config.Flag
     local options = config.Options or {}
@@ -2593,6 +2607,7 @@ function Library:_addRadioGroup(tab, config)
 end
 
 function Library:_addRow(tab, config)
+    config = config or {}
     local row = Instance.new("Frame")
     row.BackgroundTransparency = 1
     row.Size = UDim2.new(1, 0, 0, 40)
@@ -2609,6 +2624,7 @@ function Library:_addRow(tab, config)
 end
 
 function Library:_addLoader(tab, config)
+    config = config or {}
     local row = Instance.new("Frame")
     row.BackgroundColor3 = BG_ITEM
     row.BorderSizePixel = 0
@@ -2689,6 +2705,7 @@ function Library:_addLoader(tab, config)
 end
 
 function Library:_addColorPicker(tab, config)
+    config = config or {}
     local self = self
     local flag = config.Flag
     local current
@@ -3002,7 +3019,6 @@ end
 -- PLAYER LIST
 -- ============================================================
 function Library:AddPlayerList(tab, config)
-    local self = self
     config = config or {}
     tab:CreateSection({ Text = config.Title or "Игроки" })
 
@@ -3028,7 +3044,7 @@ function Library:AddPlayerList(tab, config)
 
     local function refresh()
         for _, c in ipairs(holder:GetChildren()) do
-            if c:IsA("TextButton") then c:Destroy() end
+            if c:IsA("TextButton") and c.Name ~= "RefreshBtn" then c:Destroy() end
         end
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
@@ -3055,6 +3071,7 @@ function Library:AddPlayerList(tab, config)
     refresh()
 
     local refreshBtn = Instance.new("TextButton")
+    refreshBtn.Name = "RefreshBtn"
     refreshBtn.BackgroundColor3 = THEMES[currentThemeKey].Accent
     refreshBtn.BorderSizePixel = 0
     refreshBtn.Size = UDim2.new(1, 0, 0, 32)
@@ -3117,7 +3134,9 @@ end
 
 function Library:SetParticles(enabled)
     self._particlesEnabled = enabled and true or false
-    if self.ParticleLayer then self.ParticleLayer.Visible = self._particlesEnabled end
+    if self.ParticleLayer and self.ParticleLayer.Parent then
+        self.ParticleLayer.Visible = self._particlesEnabled
+    end
 end
 
 function Library:_animate(dt, t)
@@ -3137,7 +3156,7 @@ function Library:_animate(dt, t)
         self.ToggleGlow.BackgroundTransparency = 0.78 + math.sin(t * 2.2) * 0.1
     end
     if self.Enabled and self._particlesEnabled and not self._minimized then
-        for _, p in ipairs(self._particles) do
+        for _, p in ipairs(self._particles or {}) do
             p.y = p.y - p.speed * dt
             if p.y < -0.05 then
                 p.y = 1.05
@@ -3153,7 +3172,7 @@ function Library:SetGlowMode(mode)
     self._glowMode = (mode == "rainbow") and "rainbow" or "theme"
     if self._glowMode == "theme" then
         local theme = THEMES[currentThemeKey]
-        for _, l in ipairs(self.GlowLayers) do
+        for _, l in ipairs(self.GlowLayers or {}) do
             TweenService:Create(l.instance, TweenInfo.new(0.4), { BackgroundColor3 = theme.Accent }):Play()
         end
     end
@@ -3181,7 +3200,7 @@ function Library:SetTheme(key)
     for _, sb in ipairs(self._scrollBars or {}) do
         TweenService:Create(sb, TweenInfo.new(0.3), { ScrollBarImageColor3 = theme.Accent }):Play()
     end
-    for _, el in ipairs(self.Elements) do
+    for _, el in ipairs(self.Elements or {}) do
         if el.UpdateTheme then el.UpdateTheme() end
     end
     if self.CurrentTab and self.TabButtons[self.CurrentTab] then
@@ -3193,6 +3212,7 @@ end
 -- NOTIFY
 -- ============================================================
 function Library:Notify(config)
+    config = config or {}
     local kind = config.Kind or "info"
     local accent = THEMES[currentThemeKey].Accent
     local symbol = "ℹ"

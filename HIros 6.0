@@ -290,6 +290,17 @@ function Library:CreateWindow(config)
     self._hotkey = DEFAULT_HOTKEY
     self._configSlot = "default"
     self._scale = 1
+    self._clickFx = {
+        Enabled = false,
+        Style = "Rings",   -- Rings / Pulse / Burst / Focus
+        Color = "theme",   -- "theme" | "rainbow" | Color3
+        Size = 80,         -- макс. диаметр, px
+        Rings = 3,         -- количество колец
+        Duration = 0.65,   -- сек
+        IgnoreGui = false, -- не показывать при кликах по GUI
+        Right = false,     -- также по правой кнопке мыши
+    }
+    self._fxActive = 0
 
     if self.Config.Theme and THEMES[self.Config.Theme] then
         currentThemeKey = self.Config.Theme
@@ -414,6 +425,7 @@ function Library:CreateWindow(config)
     glassShine.ZIndex = 3
     glassShine.Parent = self.Main
     createCorner(glassShine, 18)
+    self.GlassShine = glassShine
     local shineGrad = Instance.new("UIGradient")
     shineGrad.Rotation = 90
     shineGrad.Transparency = NumberSequence.new({
@@ -463,7 +475,7 @@ function Library:CreateWindow(config)
     self.TitleBar.BorderSizePixel = 0
     self.TitleBar.Size = UDim2.new(1, 0, 0, 42)
     self.TitleBar.Active = true
-    self.TitleBar.ZIndex = 3
+    self.TitleBar.ZIndex = 20
     self.TitleBar.Parent = self.Main
 
     -- Фон шапки: внутри CanvasGroup все слои непрозрачные, а прозрачность
@@ -489,6 +501,7 @@ function Library:CreateWindow(config)
     titleSquare.Size = UDim2.new(1, 0, 0, 24)
     titleSquare.Position = UDim2.new(0, 0, 1, -24)
     titleSquare.Parent = titleBg
+    self.TitleSquare = titleSquare
 
     -- Неоновая линия под заголовком (бегущий градиент)
     self.AccentLine = Instance.new("Frame")
@@ -497,7 +510,7 @@ function Library:CreateWindow(config)
     self.AccentLine.BorderSizePixel = 0
     self.AccentLine.Position = UDim2.new(0, 0, 0, 41)
     self.AccentLine.Size = UDim2.new(1, 0, 0, 2)
-    self.AccentLine.ZIndex = 5
+    self.AccentLine.ZIndex = 25
     self.AccentLine.Parent = self.Main
     self.LineGradient = Instance.new("UIGradient")
     self.LineGradient.Transparency = NumberSequence.new({
@@ -584,13 +597,22 @@ function Library:CreateWindow(config)
     minBtn.MouseButton1Click:Connect(function() self:Minimize() end)
 
     -- Sidebar
+    -- Body: всё, кроме шапки (сайдбар + контент). При сворачивании скрывается
+    -- целиком, остаётся только плашка с заголовком и кнопками.
+    self.Body = Instance.new("CanvasGroup")
+    self.Body.Name = "Body"
+    self.Body.BackgroundTransparency = 1
+    self.Body.Size = UDim2.new(1, 0, 1, 0)
+    self.Body.ZIndex = 2
+    self.Body.Parent = self.Main
+
     self.Sidebar = Instance.new("Frame")
     self.Sidebar.BackgroundTransparency = 1
     self.Sidebar.BorderSizePixel = 0
     self.Sidebar.Position = UDim2.new(0, 0, 0, 42)
     self.Sidebar.Size = UDim2.new(0, 150, 1, -42)
     self.Sidebar.ZIndex = 3
-    self.Sidebar.Parent = self.Main
+    self.Sidebar.Parent = self.Body
 
     -- Фон сайдбара: скруглён ТОЛЬКО нижний-левый угол (как у окна, радиус 18).
     -- Скруглённый слой + квадратные "заплатки" сверху и справа в CanvasGroup.
@@ -699,7 +721,7 @@ function Library:CreateWindow(config)
     self.ContentArea.Position = UDim2.new(0, 150, 0, 42)
     self.ContentArea.Size = UDim2.new(1, -150, 1, -42)
     self.ContentArea.ZIndex = 3
-    self.ContentArea.Parent = self.Main
+    self.ContentArea.Parent = self.Body
 
     self.ContentPadding = Instance.new("Frame")
     self.ContentPadding.BackgroundTransparency = 1
@@ -728,6 +750,16 @@ function Library:CreateWindow(config)
 
     self:_createToggleButton()
     self:_applyThemeVisuals()
+    local cfgFx = self.Config.ClickEffect
+    if cfgFx then
+        if type(cfgFx) == "table" then
+            local copy = { Enabled = true }
+            for k, v in pairs(cfgFx) do copy[k] = v end
+            self:SetClickEffect(copy)
+        else
+            self:SetClickEffect(true)
+        end
+    end
     self:Toggle(true)
     return self
 end
@@ -743,8 +775,9 @@ function Library:_syncGlowSize()
     else
         w, h = self.WindowSize.X, self.WindowSize.Y
     end
+    local k = self._minimized and 0.45 or 1
     for _, l in ipairs(self.GlowLayers) do
-        local pad = l.config.padding
+        local pad = l.config.padding * k
         l.instance.Size = UDim2.new(0, w + pad * 2, 0, h + pad * 2)
     end
 end
@@ -785,6 +818,7 @@ function Library:_createToggleButton()
     self.FloatHolder.Position = UDim2.new(1, -40, 1, -40)
     self.FloatHolder.Size = UDim2.new(0, 46, 0, 46)
     self.FloatHolder.BackgroundTransparency = 1
+    self.FloatHolder.ZIndex = 100
     self.FloatHolder.Parent = self.ScreenGui
 
     self.ToggleGlow = Instance.new("Frame")
@@ -853,8 +887,7 @@ function Library:Toggle(enabled)
         for _, l in ipairs(self.GlowLayers) do
             l.instance.BackgroundTransparency = l.config.transparency
         end
-        self._minimized = false
-        if self.MinBtn then self.MinBtn.Text = "➖" end
+        self:_resetCollapse()
         self.Main.Size = UDim2.new(0, self.WindowSize.X, 0, 0)
         TweenService:Create(self.Main, TweenInfo.new(0.42, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
             Size = UDim2.new(0, self.WindowSize.X, 0, self.WindowSize.Y),
@@ -884,6 +917,8 @@ function Library:Toggle(enabled)
 end
 
 function Library:Destroy()
+    if self._clickConn then self._clickConn:Disconnect(); self._clickConn = nil end
+    if self.ClickGui then self.ClickGui:Destroy() end
     if self.ScreenGui then self.ScreenGui:Destroy() end
     if self.ToggleBtn then self.ToggleBtn:Destroy() end
 end
@@ -902,15 +937,71 @@ function Library:GetHotkey()
     return self._hotkey or DEFAULT_HOTKEY
 end
 
-function Library:Minimize()
-    if self.MinBtn then self.MinBtn.Text = self._minimized and "➖" or "➕" end
-    if self._minimized then
-        self._minimized = false
-        TweenService:Create(self.Main, TweenInfo.new(0.25), { Size = UDim2.new(0, self.WindowSize.X, 0, self.WindowSize.Y) }):Play()
-    else
-        self._minimized = true
-        TweenService:Create(self.Main, TweenInfo.new(0.25), { Size = UDim2.new(0, self.WindowSize.X, 0, 42) }):Play()
+-- Полный сброс состояния сворачивания (при открытии окна)
+function Library:_resetCollapse()
+    self._minimized = false
+    self._collapseToken = (self._collapseToken or 0) + 1
+    if self.MinBtn then self.MinBtn.Text = "➖" end
+    if self.Body then
+        self.Body.Visible = true
+        self.Body.GroupTransparency = 0
     end
+    if self.TitleSquare then self.TitleSquare.Visible = true end
+    if self.AccentLine then self.AccentLine.Visible = true end
+    if self.GlassShine then self.GlassShine.Visible = true end
+    if self.ParticleLayer then self.ParticleLayer.Visible = self._particlesEnabled end
+    self.Main.Position = UDim2.new(0.5, 0, 0.5, 0)
+    self.GlowHolder.Position = UDim2.new(0.5, 0, 0.5, 0)
+end
+
+-- Свернуть до плашки: содержимое окна исчезает ПОЛНОСТЬЮ,
+-- остаются только заголовок (им можно двигать окно) и кнопки ➕ / ❌
+function Library:SetMinimized(state)
+    state = state and true or false
+    if (self._minimized and true or false) == state then return end
+    self._minimized = state
+    self._collapseToken = (self._collapseToken or 0) + 1
+    local token = self._collapseToken
+    if self.MinBtn then self.MinBtn.Text = state and "➕" or "➖" end
+
+    local W, H, BAR = self.WindowSize.X, self.WindowSize.Y, 42
+    local shiftY = -math.floor((H - BAR) / 2) -- верх шапки остаётся на месте
+    local center = UDim2.new(0.5, 0, 0.5, 0)
+    local shifted = UDim2.new(0.5, 0, 0.5, shiftY)
+
+    if state then
+        -- 1) тело плавно исчезает, 2) окно схлопывается в плашку
+        TweenService:Create(self.Body, TweenInfo.new(0.15), { GroupTransparency = 1 }):Play()
+        if self.ParticleLayer then self.ParticleLayer.Visible = false end
+        if self.GlassShine then self.GlassShine.Visible = false end
+        task.delay(0.15, function()
+            if token ~= self._collapseToken then return end
+            self.Body.Visible = false
+            if self.TitleSquare then self.TitleSquare.Visible = false end -- плашка скруглена со всех сторон
+            if self.AccentLine then self.AccentLine.Visible = false end
+            local info = TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+            TweenService:Create(self.Main, info, { Size = UDim2.new(0, W, 0, BAR), Position = shifted }):Play()
+            TweenService:Create(self.GlowHolder, info, { Position = shifted }):Play()
+        end)
+    else
+        if self.TitleSquare then self.TitleSquare.Visible = true end
+        if self.AccentLine then self.AccentLine.Visible = true end
+        local info = TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+        TweenService:Create(self.Main, info, { Size = UDim2.new(0, W, 0, H), Position = center }):Play()
+        TweenService:Create(self.GlowHolder, info, { Position = center }):Play()
+        self.Body.Visible = true
+        self.Body.GroupTransparency = 1
+        task.delay(0.15, function()
+            if token ~= self._collapseToken then return end
+            TweenService:Create(self.Body, TweenInfo.new(0.22), { GroupTransparency = 0 }):Play()
+            if self.ParticleLayer then self.ParticleLayer.Visible = self._particlesEnabled end
+            if self.GlassShine then self.GlassShine.Visible = true end
+        end)
+    end
+end
+
+function Library:Minimize()
+    self:SetMinimized(not self._minimized)
 end
 
 function Library:SetScale(n)
@@ -1231,25 +1322,25 @@ function Library:CreateTab(nameOrConfig)
     btn.MouseButton1Click:Connect(function() self:SelectTab(key) end)
     if not self.CurrentTab then self:SelectTab(key) end
 
-    tab.CreateButton = function(_, cfg) return self:_addButton(tab, cfg) end
-    tab.CreateToggle = function(_, cfg) return self:_addToggle(tab, cfg) end
-    tab.CreateSlider = function(_, cfg) return self:_addSlider(tab, cfg) end
-    tab.CreateColorPicker = function(_, cfg) return self:_addColorPicker(tab, cfg) end
-    tab.CreateDropdown = function(_, cfg) return self:_addDropdown(tab, cfg) end
-    tab.CreateMultiDropdown = function(_, cfg) return self:_addMultiDropdown(tab, cfg) end
-    tab.CreateInput = function(_, cfg) return self:_addInput(tab, cfg) end
-    tab.CreateTextBox = function(_, cfg) return self:_addTextBox(tab, cfg) end
-    tab.CreateLabel = function(_, cfg) return self:_addLabel(tab, cfg) end
-    tab.CreateDivider = function(_, cfg) return self:_addDivider(tab, cfg) end
-    tab.CreateDividerText = function(_, cfg) return self:_addDividerText(tab, cfg) end
-    tab.CreateSection = function(_, cfg) return self:_addSection(tab, cfg) end
-    tab.CreateKeybind = function(_, cfg) return self:_addKeybind(tab, cfg) end
-    tab.CreateParagraph = function(_, cfg) return self:_addParagraph(tab, cfg) end
-    tab.CreateProgressBar = function(_, cfg) return self:_addProgressBar(tab, cfg) end
-    tab.CreateStepper = function(_, cfg) return self:_addStepper(tab, cfg) end
-    tab.CreateRadioGroup = function(_, cfg) return self:_addRadioGroup(tab, cfg) end
-    tab.CreateRow = function(_, cfg) return self:_addRow(tab, cfg) end
-    tab.CreateLoader = function(_, cfg) return self:_addLoader(tab, cfg) end
+    tab.CreateButton = function(_, cfg) return self:_addButton(tab, cfg or {}) end
+    tab.CreateToggle = function(_, cfg) return self:_addToggle(tab, cfg or {}) end
+    tab.CreateSlider = function(_, cfg) return self:_addSlider(tab, cfg or {}) end
+    tab.CreateColorPicker = function(_, cfg) return self:_addColorPicker(tab, cfg or {}) end
+    tab.CreateDropdown = function(_, cfg) return self:_addDropdown(tab, cfg or {}) end
+    tab.CreateMultiDropdown = function(_, cfg) return self:_addMultiDropdown(tab, cfg or {}) end
+    tab.CreateInput = function(_, cfg) return self:_addInput(tab, cfg or {}) end
+    tab.CreateTextBox = function(_, cfg) return self:_addTextBox(tab, cfg or {}) end
+    tab.CreateLabel = function(_, cfg) return self:_addLabel(tab, cfg or {}) end
+    tab.CreateDivider = function(_, cfg) return self:_addDivider(tab, cfg or {}) end
+    tab.CreateDividerText = function(_, cfg) return self:_addDividerText(tab, cfg or {}) end
+    tab.CreateSection = function(_, cfg) return self:_addSection(tab, cfg or {}) end
+    tab.CreateKeybind = function(_, cfg) return self:_addKeybind(tab, cfg or {}) end
+    tab.CreateParagraph = function(_, cfg) return self:_addParagraph(tab, cfg or {}) end
+    tab.CreateProgressBar = function(_, cfg) return self:_addProgressBar(tab, cfg or {}) end
+    tab.CreateStepper = function(_, cfg) return self:_addStepper(tab, cfg or {}) end
+    tab.CreateRadioGroup = function(_, cfg) return self:_addRadioGroup(tab, cfg or {}) end
+    tab.CreateRow = function(_, cfg) return self:_addRow(tab, cfg or {}) end
+    tab.CreateLoader = function(_, cfg) return self:_addLoader(tab, cfg or {}) end
 
     return tab
 end
@@ -3201,6 +3292,169 @@ function Library:_applyThemeVisuals()
         p.frame.BackgroundColor3 = theme.Accent
     end
     -- индикаторы и подписи вкладок остаются белыми на акцентном фоне
+end
+
+-- ============================================================
+-- ЭФФЕКТ КЛИКОВ В ИГРЕ (кружки на месте клика, как в монтажах)
+-- ============================================================
+local CLICK_STYLES = { Rings = true, Pulse = true, Burst = true, Focus = true }
+
+local function getFxColor(fx)
+    local c = fx.Color
+    if typeof(c) == "Color3" then return c end
+    if c == "rainbow" then return Color3.fromHSV((os.clock() * 0.35) % 1, 0.8, 1) end
+    return THEMES[currentThemeKey].Accent
+end
+
+local function newFxCircle(parent, pos, startSize, color, z)
+    local f = Instance.new("Frame")
+    f.AnchorPoint = Vector2.new(0.5, 0.5)
+    f.Position = UDim2.new(0, pos.X, 0, pos.Y)
+    f.Size = UDim2.new(0, startSize, 0, startSize)
+    f.BackgroundColor3 = color
+    f.BackgroundTransparency = 1
+    f.BorderSizePixel = 0
+    f.ZIndex = z or 1
+    f.Parent = parent
+    createCorner(f, 999)
+    return f
+end
+
+-- Window:SetClickEffect(true/false) — вкл/выкл
+-- Window:SetClickEffect({ Style = "Burst", Color = "rainbow", Size = 100 }) — изменить настройки (вкл/выкл не трогает,
+-- чтобы включить сразу, добавь Enabled = true). В CreateWindow({ ClickEffect = {...} }) эффект включается сам.
+function Library:SetClickEffect(opt)
+    local fx = self._clickFx
+    if type(opt) == "boolean" then
+        fx.Enabled = opt
+    elseif type(opt) == "table" then
+        for k, v in pairs(opt) do fx[k] = v end
+    end
+    if not CLICK_STYLES[fx.Style] then fx.Style = "Rings" end
+    fx.Size = math.clamp(tonumber(fx.Size) or 80, 30, 300)
+    fx.Rings = math.clamp(math.floor(tonumber(fx.Rings) or 3), 1, 6)
+    fx.Duration = math.clamp(tonumber(fx.Duration) or 0.65, 0.2, 2)
+
+    if fx.Enabled then
+        if not self.ClickGui then
+            -- отдельный ScreenGui поверх всего, чтобы круги были видны и над меню
+            local gui = Instance.new("ScreenGui")
+            gui.Name = "HIros_ClickFX"
+            gui.ResetOnSpawn = false
+            gui.IgnoreGuiInset = true
+            gui.DisplayOrder = 100
+            gui.Parent = PlayerGui
+            self.ClickGui = gui
+        end
+        if not self._clickConn then
+            self._clickConn = UserInputService.InputBegan:Connect(function(input, gp)
+                local cfg = self._clickFx
+                if not cfg.Enabled then return end
+                if cfg.IgnoreGui and gp then return end
+                local t = input.UserInputType
+                if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch
+                    or (cfg.Right and t == Enum.UserInputType.MouseButton2) then
+                    self:_spawnClickFX(Vector2.new(input.Position.X, input.Position.Y))
+                end
+            end)
+        end
+    else
+        if self._clickConn then self._clickConn:Disconnect(); self._clickConn = nil end
+    end
+end
+
+function Library:GetClickEffect()
+    local copy = {}
+    for k, v in pairs(self._clickFx) do copy[k] = v end
+    return copy
+end
+
+function Library:_spawnClickFX(pos)
+    local fx = self._clickFx
+    local gui = self.ClickGui
+    if not gui then return end
+    if self._fxActive > 60 then return end -- защита от спама кликами
+
+    local color = getFxColor(fx)
+    local size, dur, n, style = fx.Size, fx.Duration, fx.Rings, fx.Style
+
+    local function track(inst, lifetime)
+        self._fxActive = self._fxActive + 1
+        task.delay(lifetime, function()
+            inst:Destroy()
+            self._fxActive = math.max(0, self._fxActive - 1)
+        end)
+    end
+
+    local info = TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+    -- центральная точка-вспышка (у всех стилей)
+    local dot = newFxCircle(gui, pos, 14, color, 3)
+    dot.BackgroundTransparency = 0.2
+    TweenService:Create(dot, TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 2, 0, 2), BackgroundTransparency = 1,
+    }):Play()
+    track(dot, 0.33)
+
+    if style == "Rings" or style == "Focus" then
+        -- 3 кольца с задержкой: Rings расходятся наружу, Focus сжимаются к точке клика
+        for i = 1, n do
+            local function make()
+                local maxSize = size * (0.6 + 0.4 * (i / n))
+                local focus = (style == "Focus")
+                local c = newFxCircle(gui, pos, focus and maxSize or 10, color, 1)
+                local stroke = Instance.new("UIStroke")
+                stroke.Color = color
+                stroke.Thickness = 3.5
+                stroke.Transparency = focus and 0.4 or 0.1
+                stroke.Parent = c
+                local target = focus and 8 or maxSize
+                TweenService:Create(c, info, { Size = UDim2.new(0, target, 0, target) }):Play()
+                TweenService:Create(stroke, info, { Transparency = 1, Thickness = 0.8 }):Play()
+                track(c, dur + 0.05)
+            end
+            if i == 1 then make() else task.delay((i - 1) * 0.09, make) end
+        end
+
+    elseif style == "Pulse" then
+        -- заливные полупрозрачные круги, расходящиеся волной
+        for i = 1, n do
+            local function make()
+                local maxSize = size * (0.6 + 0.4 * (i / n))
+                local c = newFxCircle(gui, pos, 10, color, 1)
+                c.BackgroundTransparency = 0.55
+                TweenService:Create(c, info, {
+                    Size = UDim2.new(0, maxSize, 0, maxSize), BackgroundTransparency = 1,
+                }):Play()
+                track(c, dur + 0.05)
+            end
+            if i == 1 then make() else task.delay((i - 1) * 0.09, make) end
+        end
+
+    elseif style == "Burst" then
+        -- точки разлетаются лучами + одно кольцо
+        local count = 6 + n * 2
+        for i = 1, count do
+            local ang = (i / count) * math.pi * 2
+            local d = newFxCircle(gui, pos, 7, color, 2)
+            d.BackgroundTransparency = 0.05
+            TweenService:Create(d, info, {
+                Position = UDim2.new(0, pos.X + math.cos(ang) * size * 0.6, 0, pos.Y + math.sin(ang) * size * 0.6),
+                Size = UDim2.new(0, 2, 0, 2),
+                BackgroundTransparency = 1,
+            }):Play()
+            track(d, dur + 0.05)
+        end
+        local c = newFxCircle(gui, pos, 10, color, 1)
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = color
+        stroke.Thickness = 3
+        stroke.Transparency = 0.1
+        stroke.Parent = c
+        TweenService:Create(c, info, { Size = UDim2.new(0, size * 0.5, 0, size * 0.5) }):Play()
+        TweenService:Create(stroke, info, { Transparency = 1, Thickness = 0.8 }):Play()
+        track(c, dur + 0.05)
+    end
 end
 
 function Library:SetParticles(enabled)

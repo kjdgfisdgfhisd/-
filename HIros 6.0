@@ -7,6 +7,7 @@ local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Lighting         = game:GetService("Lighting")
 local SoundService     = game:GetService("SoundService")
+local GuiService       = game:GetService("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
@@ -152,6 +153,18 @@ end
 -- ============================================================
 -- UTILS
 -- ============================================================
+-- Позиция указателя в координатах наших ScreenGui (у них IgnoreGuiInset = true,
+-- т.е. отсчёт от самого верха экрана). input.Position у мыши/тача считается от
+-- нижнего края верхней панели Roblox, поэтому без поправки всё "уезжает" вверх.
+local function pointerPos(input)
+    if input.UserInputType == Enum.UserInputType.Touch then
+        local inset = GuiService:GetGuiInset()
+        return Vector2.new(input.Position.X + inset.X, input.Position.Y + inset.Y)
+    end
+    return UserInputService:GetMouseLocation()
+end
+Library._pointerPos = pointerPos
+
 local function createCorner(parent, r)
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, r or 10)
@@ -217,8 +230,9 @@ local function addHover(row)
     row.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
-            local relX = input.Position.X - row.AbsolutePosition.X
-            local relY = input.Position.Y - row.AbsolutePosition.Y
+            local pp = pointerPos(input)
+            local relX = pp.X - row.AbsolutePosition.X
+            local relY = pp.Y - row.AbsolutePosition.Y
             local ripple = Instance.new("Frame")
             ripple.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
             ripple.BackgroundTransparency = 0.75
@@ -3072,8 +3086,9 @@ function Library:_addColorPicker(tab, config)
 
     local dsv = false
     local function handleSV(input)
-        s = math.clamp((input.Position.X - svField.AbsolutePosition.X) / svField.AbsoluteSize.X, 0, 1)
-        v = 1 - math.clamp((input.Position.Y - svField.AbsolutePosition.Y) / svField.AbsoluteSize.Y, 0, 1)
+        local pp = pointerPos(input)
+        s = math.clamp((pp.X - svField.AbsolutePosition.X) / svField.AbsoluteSize.X, 0, 1)
+        v = 1 - math.clamp((pp.Y - svField.AbsolutePosition.Y) / svField.AbsoluteSize.Y, 0, 1)
         apply()
     end
     svField.InputBegan:Connect(function(input)
@@ -3354,7 +3369,7 @@ function Library:SetClickEffect(opt)
                 local t = input.UserInputType
                 if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch
                     or (cfg.Right and t == Enum.UserInputType.MouseButton2) then
-                    self:_spawnClickFX(Vector2.new(input.Position.X, input.Position.Y))
+                    self:_spawnClickFX(pointerPos(input))
                 end
             end)
         end

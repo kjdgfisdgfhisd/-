@@ -3536,34 +3536,61 @@ function Library:_postWebhook(url, payload)
     end)
 end
 
+-- GET-запрос: HttpService, а если нельзя — request()/http_request()/syn.request()
+local function httpGet(url)
+    local body
+    pcall(function() body = game:GetService("HttpService"):GetAsync(url) end)
+    if body then return body end
+    local reqFn = (syn and syn.request) or (http and http.request)
+        or rawget(_G, "http_request") or rawget(_G, "request")
+    if type(reqFn) == "function" then
+        pcall(function()
+            local res = reqFn({ Url = url, Method = "GET" })
+            if res and res.Body then body = res.Body end
+        end)
+    end
+    return body
+end
+
+-- Ссылка на аватарку по ID игрока (нужна настоящая https-картинка, Discord не понимает rbxthumb://).
+-- 1) API миниатюр Roblox через roproxy (обычный roblox.com из игр заблокирован) -> прямая ссылка на CDN
+-- 2) запасной вариант: прямая ссылка-редирект roblox.com, её Discord тоже подтягивает
+local function getAvatarUrl(userId)
+    local id = tostring(userId)
+    local api = "https://thumbnails.roproxy.com/v1/users/avatar-headshot?userIds=" .. id
+        .. "&size=420x420&format=Png&isCircular=false"
+    local body = httpGet(api)
+    if body then
+        local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(body) end)
+        if ok and type(data) == "table" and type(data.data) == "table" then
+            local item = data.data[1]
+            if item and item.state == "Completed" and type(item.imageUrl) == "string"
+                and item.imageUrl:match("^https?://") then
+                return item.imageUrl
+            end
+        end
+    end
+    return "https://www.roblox.com/headshot-thumbnail/image?userId=" .. id .. "&width=420&height=420&format=png"
+end
+
 -- Согласился: случайное сообщение от имени игрока. Отказался: анонимный +1, без ника и аватарки.
 function Library:_sendShoutout(webhookUrl, consented)
-    local payload
-    if consented then
-        local template = SHOUTOUT_MESSAGES[math.random(1, #SHOUTOUT_MESSAGES)]
-        local content = string.format(template, BRAND)
-
-        local avatarUrl = nil
-        pcall(function()
-            local thumb = Players:GetUserThumbnailAsync(
-                LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420
-            )
-            if type(thumb) == "string" and thumb:match("^https?://") then
-                avatarUrl = thumb
-            end
-        end)
-
-        payload = {
-            content = content,
-            username = LocalPlayer.DisplayName .. " (@" .. LocalPlayer.Name .. ")",
-        }
-        if avatarUrl then payload.avatar_url = avatarUrl end
-    else
-        payload = {
-            content = "📊 +1 использование " .. BRAND .. " (игрок не стал делиться ником и аватаркой)",
-        }
-    end
-    self:_postWebhook(webhookUrl, payload)
+    task.spawn(function()
+        local payload
+        if consented then
+            local template = SHOUTOUT_MESSAGES[math.random(1, #SHOUTOUT_MESSAGES)]
+            payload = {
+                content = string.format(template, BRAND),
+                username = LocalPlayer.DisplayName .. " (@" .. LocalPlayer.Name .. ")",
+                avatar_url = getAvatarUrl(LocalPlayer.UserId),
+            }
+        else
+            payload = {
+                content = "📊 +1 использование " .. BRAND .. " (игрок не стал делиться ником и аватаркой)",
+            }
+        end
+        self:_postWebhook(webhookUrl, payload)
+    end)
 end
 
 -- Window:PromptShoutout({ Webhook = "https://discord.com/api/webhooks/..." })

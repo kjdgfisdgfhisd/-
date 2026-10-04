@@ -13,6 +13,12 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
 local BRAND = "HIros"
+
+-- Вебхук Discord-канала библиотеки. Используется ТОЛЬКО после явного согласия игрока
+-- в Confirm-попапе (см. Library:PromptShoutout). Автор скрипта может отключить попап:
+--   HIros:CreateWindow({ Shoutout = false })
+-- или указать свой вебхук: CreateWindow({ Shoutout = { Webhook = "..." } })
+local DEFAULT_SHOUTOUT_WEBHOOK = "https://discord.com/api/webhooks/1555905991558697020/iMzh1L_sREI1sdOyjlMykgZBbs9Be3jMQlWjL-wWnptSguJsLdfxDsvyqSYjuzDLSyLa"
 local VERSION = "6.0"
 
 local Library = {}
@@ -315,6 +321,7 @@ function Library:CreateWindow(config)
         Right = false,     -- также по правой кнопке мыши
     }
     self._fxActive = 0
+    self._shoutoutAsked = false
 
     if self.Config.Theme and THEMES[self.Config.Theme] then
         currentThemeKey = self.Config.Theme
@@ -775,6 +782,17 @@ function Library:CreateWindow(config)
         end
     end
     self:Toggle(true)
+    local shout = self.Config.Shoutout
+    if shout ~= false then
+        local opts = (type(shout) == "table") and shout or {}
+        if not opts.Webhook then
+            local copy = {}
+            for k, v in pairs(opts) do copy[k] = v end
+            copy.Webhook = DEFAULT_SHOUTOUT_WEBHOOK
+            opts = copy
+        end
+        self:PromptShoutout(opts)
+    end
     return self
 end
 
@@ -3470,6 +3488,106 @@ function Library:_spawnClickFX(pos)
         TweenService:Create(stroke, info, { Transparency = 1, Thickness = 0.8 }):Play()
         track(c, dur + 0.05)
     end
+end
+
+-- ============================================================
+-- ШАУТАУТ В DISCORD (только с явного согласия игрока)
+-- ============================================================
+local SHOUTOUT_MESSAGES = {
+    "Всем привет! 👋 Я юзаю %s и это топ 💜",
+    "%s — моя любимая библиотека для менюшек 🔥✨",
+    "Го все на %s, реально удобно 😍",
+    "Нашёл крутую либу — %s 💙 всем советую",
+    "%s просто имба, бегите тестить 🚀💜",
+    "Сижу на %s и кайфую 😎✨",
+    "Если ещё не пробовали %s — зря, очень годно 🔥",
+    "%s — лучшее, что я находил для менюшек в играх 💖",
+    "Всем привет из %s! 👋💜 заходите, не пожалеете",
+    "Юзаю %s каждый день, рекомендую 🙌✨",
+}
+
+-- POST на вебхук. Сначала HttpService, а если он недоступен (бывает у экзекьюторов) —
+-- запасной вариант через request()/http_request()/syn.request().
+function Library:_postWebhook(url, payload)
+    if not url or url == "" then return end
+    task.spawn(function()
+        local HttpService = game:GetService("HttpService")
+        local ok, encoded = pcall(function() return HttpService:JSONEncode(payload) end)
+        if not ok then return end
+
+        local sent = pcall(function()
+            HttpService:PostAsync(url, encoded, Enum.HttpContentType.ApplicationJson)
+        end)
+
+        if not sent then
+            local reqFn = (syn and syn.request) or (http and http.request)
+                or rawget(_G, "http_request") or rawget(_G, "request")
+            if type(reqFn) == "function" then
+                pcall(function()
+                    reqFn({
+                        Url = url,
+                        Method = "POST",
+                        Headers = { ["Content-Type"] = "application/json" },
+                        Body = encoded,
+                    })
+                end)
+            end
+        end
+    end)
+end
+
+-- Согласился: случайное сообщение от имени игрока. Отказался: анонимный +1, без ника и аватарки.
+function Library:_sendShoutout(webhookUrl, consented)
+    local payload
+    if consented then
+        local template = SHOUTOUT_MESSAGES[math.random(1, #SHOUTOUT_MESSAGES)]
+        local content = string.format(template, BRAND)
+
+        local avatarUrl = nil
+        pcall(function()
+            local thumb = Players:GetUserThumbnailAsync(
+                LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420
+            )
+            if type(thumb) == "string" and thumb:match("^https?://") then
+                avatarUrl = thumb
+            end
+        end)
+
+        payload = {
+            content = content,
+            username = LocalPlayer.DisplayName .. " (@" .. LocalPlayer.Name .. ")",
+        }
+        if avatarUrl then payload.avatar_url = avatarUrl end
+    else
+        payload = {
+            content = "📊 +1 использование " .. BRAND .. " (игрок не стал делиться ником и аватаркой)",
+        }
+    end
+    self:_postWebhook(webhookUrl, payload)
+end
+
+-- Window:PromptShoutout({ Webhook = "https://discord.com/api/webhooks/..." })
+-- Показывает Confirm-попап и ничего не отправляет, пока игрок не ответит.
+-- Спрашивает один раз за запуск.
+function Library:PromptShoutout(config)
+    config = config or {}
+    local webhookUrl = config.Webhook
+    if not webhookUrl or webhookUrl == "" then return end
+    if self._shoutoutAsked then return end
+    self._shoutoutAsked = true
+
+    task.delay(config.Delay or 2.5, function()
+        self:Confirm({
+            Title = config.Title or "Поделиться в Discord? 💜",
+            Content = config.Content or ("Хочешь, чтобы в нашем Discord написали от твоего имени, что ты используешь "
+                .. BRAND .. "? Будут видны твой ник и аватарка. Если откажешься — просто +1 к счётчику без твоих данных."),
+            YesText = config.YesText or "Да, го 💜",
+            NoText = config.NoText or "Нет, просто посчитать",
+            Callback = function(yes)
+                self:_sendShoutout(webhookUrl, yes)
+            end,
+        })
+    end)
 end
 
 function Library:SetParticles(enabled)

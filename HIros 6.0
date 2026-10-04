@@ -3506,70 +3506,101 @@ local SHOUTOUT_MESSAGES = {
     "Юзаю %s каждый день, рекомендую 🙌✨",
 }
 
--- POST на вебхук. Сначала HttpService, а если он недоступен (бывает у экзекьюторов) —
--- запасной вариант через request()/http_request()/syn.request().
+local function dbg(...)
+    if Library.ShoutoutDebug then print("[HIros Shoutout]", ...) end
+end
+
+-- HTTP-функция экзекьютора. Ищем как обычные глобалы (так они и лежат в окружении
+-- скрипта), а не в _G — там их обычно нет.
+local function execRequestFn()
+    return (syn and syn.request) or (http and http.request) or http_request or request
+        or (fluxus and fluxus.request)
+end
+
+-- GET: сначала game:HttpGet экзекьютора (ходит куда угодно, в т.ч. на roblox.com),
+-- потом request(), потом HttpService.
+local function httpGet(url)
+    local ok, res = pcall(function() return game:HttpGet(url) end)
+    if ok and type(res) == "string" and res ~= "" then
+        dbg("GET ok через game:HttpGet:", url)
+        return res
+    end
+
+    local reqFn = execRequestFn()
+    if reqFn then
+        local ok2, r = pcall(reqFn, { Url = url, Method = "GET" })
+        if ok2 and type(r) == "table" and type(r.Body) == "string" and r.Body ~= "" then
+            dbg("GET ok через request():", url)
+            return r.Body
+        end
+    end
+
+    local ok3, r3 = pcall(function() return game:GetService("HttpService"):GetAsync(url) end)
+    if ok3 and r3 then
+        dbg("GET ok через HttpService:", url)
+        return r3
+    end
+    dbg("GET не удался:", url, ok3 and "" or tostring(r3))
+    return nil
+end
+
+-- POST на вебхук. Сначала HttpService, при неудаче — функция экзекьютора.
 function Library:_postWebhook(url, payload)
     if not url or url == "" then return end
     task.spawn(function()
         local HttpService = game:GetService("HttpService")
         local ok, encoded = pcall(function() return HttpService:JSONEncode(payload) end)
-        if not ok then return end
+        if not ok then dbg("JSONEncode не удался", tostring(encoded)) return end
 
-        local sent = pcall(function()
+        local sent, err = pcall(function()
             HttpService:PostAsync(url, encoded, Enum.HttpContentType.ApplicationJson)
         end)
+        if sent then dbg("POST ok через HttpService") return end
+        dbg("HttpService:PostAsync не удался:", tostring(err))
 
-        if not sent then
-            local reqFn = (syn and syn.request) or (http and http.request)
-                or rawget(_G, "http_request") or rawget(_G, "request")
-            if type(reqFn) == "function" then
-                pcall(function()
-                    reqFn({
-                        Url = url,
-                        Method = "POST",
-                        Headers = { ["Content-Type"] = "application/json" },
-                        Body = encoded,
-                    })
-                end)
-            end
-        end
+        local reqFn = execRequestFn()
+        if not reqFn then dbg("нет функции request() у экзекьютора, отправить не получилось") return end
+        local ok2, res = pcall(reqFn, {
+            Url = url,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = encoded,
+        })
+        dbg("POST через request():", ok2 and "ok" or tostring(res),
+            (ok2 and type(res) == "table") and ("код " .. tostring(res.StatusCode)) or "")
     end)
 end
 
--- GET-запрос: HttpService, а если нельзя — request()/http_request()/syn.request()
-local function httpGet(url)
-    local body
-    pcall(function() body = game:GetService("HttpService"):GetAsync(url) end)
-    if body then return body end
-    local reqFn = (syn and syn.request) or (http and http.request)
-        or rawget(_G, "http_request") or rawget(_G, "request")
-    if type(reqFn) == "function" then
-        pcall(function()
-            local res = reqFn({ Url = url, Method = "GET" })
-            if res and res.Body then body = res.Body end
-        end)
-    end
-    return body
-end
+-- Ссылка на аватарку по ID игрока: нужна настоящая https-картинка (Discord не понимает rbxthumb://).
+-- Спрашиваем API миниатюр Roblox (напрямую и через roproxy) и берём прямую ссылку на CDN.
+local AVATAR_APIS = {
+    "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=%s&size=420x420&format=Png&isCircular=false",
+    "https://thumbnails.roproxy.com/v1/users/avatar-headshot?userIds=%s&size=420x420&format=Png&isCircular=false",
+}
 
--- Ссылка на аватарку по ID игрока (нужна настоящая https-картинка, Discord не понимает rbxthumb://).
--- 1) API миниатюр Roblox через roproxy (обычный roblox.com из игр заблокирован) -> прямая ссылка на CDN
--- 2) запасной вариант: прямая ссылка-редирект roblox.com, её Discord тоже подтягивает
 local function getAvatarUrl(userId)
     local id = tostring(userId)
-    local api = "https://thumbnails.roproxy.com/v1/users/avatar-headshot?userIds=" .. id
-        .. "&size=420x420&format=Png&isCircular=false"
-    local body = httpGet(api)
-    if body then
-        local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(body) end)
-        if ok and type(data) == "table" and type(data.data) == "table" then
-            local item = data.data[1]
-            if item and item.state == "Completed" and type(item.imageUrl) == "string"
-                and item.imageUrl:match("^https?://") then
-                return item.imageUrl
+    for attempt = 1, 2 do
+        local pending = false
+        for _, tpl in ipairs(AVATAR_APIS) do
+            local body = httpGet(string.format(tpl, id))
+            if body then
+                local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(body) end)
+                local item = ok and type(data) == "table" and type(data.data) == "table" and data.data[1] or nil
+                if item then
+                    if item.state == "Completed" and type(item.imageUrl) == "string"
+                        and item.imageUrl:match("^https?://") then
+                        dbg("аватар получен через API:", item.imageUrl)
+                        return item.imageUrl
+                    elseif item.state == "Pending" then
+                        pending = true
+                    end
+                end
             end
         end
+        if pending and attempt == 1 then task.wait(1.2) else break end
     end
+    dbg("API миниатюр не дал ссылку, использую запасную")
     return "https://www.roblox.com/headshot-thumbnail/image?userId=" .. id .. "&width=420&height=420&format=png"
 end
 
@@ -3602,6 +3633,7 @@ function Library:PromptShoutout(config)
     if not webhookUrl or webhookUrl == "" then return end
     if self._shoutoutAsked then return end
     self._shoutoutAsked = true
+    if config.Debug then Library.ShoutoutDebug = true end
 
     task.delay(config.Delay or 2.5, function()
         self:Confirm({

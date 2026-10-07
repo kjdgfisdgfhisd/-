@@ -9,70 +9,31 @@ local plr = Players.LocalPlayer
 
 -- ============ СОСТОЯНИЕ ============
 local state = {
-    -- фарм
     farmRunning = false,
     farmCounter = 0,
     farmLimit = 50,
     selectedHole = nil,
     giveMeThreshold = 10,
     giveMeMethod = "Invoke",
-    tpMethod = "Position",
+    flySpeed = 30,
+    dropHeight = 18,
     noclipEnabled = false,
-    -- тренировка
-    trainRunning = false,
-    trainCounter = 0,
-    spamRate = 0.1,
-    spinSpam = false,
-    -- общее
     noclipConn = nil,
     visualObjects = {},
-    loops = {},
-    itemESPActive = false,
-    itemESPRefreshTime = 0,
+    jumpActive = false,
+    animating = false,
+    saveWalkSpeed = 16,
+    boostWalkSpeed = 100,
+    restoreSpeedConn = nil,
 }
 
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local ThrowItem = Remotes:WaitForChild("ThrowItem")
-local LiftDumbbell = Remotes:WaitForChild("LiftDumbbell")
-local DumbbellSpin = Remotes:WaitForChild("DumbbellSpin")
 local HoleGiveMe = Remotes:WaitForChild("HoleGiveMe")
 
 local function getChar()
     local char = plr.Character
     return char, char and char:FindFirstChild("Humanoid"), char and char:FindFirstChild("HumanoidRootPart")
-end
-
--- ============ ГАНТЕЛЬ ============
-local function getDumbbell()
-    local bp = plr:FindFirstChild("Backpack")
-    if bp then
-        local d = bp:FindFirstChild("Dumbbell")
-        if d then return d end
-    end
-    local char = plr.Character
-    if char then
-        local d = char:FindFirstChild("Dumbbell")
-        if d then return d end
-    end
-    return nil
-end
-
-local function equipDumbbell()
-    local _, hum = getChar()
-    if not hum then return false end
-    local d = getDumbbell()
-    if not d then return false end
-    if d.Parent == plr.Character then return true end
-    pcall(function() hum:EquipTool(d) end)
-    task.wait(0.1)
-    return d.Parent == plr.Character
-end
-
-local function unequipAll()
-    local _, hum = getChar()
-    if not hum then return end
-    pcall(function() hum:UnequipTools() end)
-    task.wait(0.1)
 end
 
 -- ============ NOCLIP ============
@@ -103,39 +64,85 @@ local function setNoclip(on)
     end
 end
 
--- ============ ТЕЛЕПОРТ ============
-local function teleportTo(pos)
+-- ============ JUMP FLY ============
+local function startJumpFly()
     local _, _, hrp = getChar()
-    if not hrp then return false end
-    if state.tpMethod == "Position" then
-        hrp.Position = pos + Vector3.new(0, 3, 0)
-    elseif state.tpMethod == "CFrame" then
-        hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
-    elseif state.tpMethod == "PivotTo" then
-        local char = plr.Character
-        if char then char:PivotTo(CFrame.new(pos + Vector3.new(0, 3, 0))) end
+    if not hrp then return end
+    if state.jumpActive then return end
+    state.jumpActive = true
+
+    local oldBv = hrp:FindFirstChild("WalkFarm_BV")
+    if oldBv then oldBv:Destroy() end
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "WalkFarm_BV"
+    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bv.Velocity = Vector3.new(0, 0, 0)
+    bv.Parent = hrp
+
+    local oldBg = hrp:FindFirstChild("WalkFarm_BG")
+    if oldBg then oldBg:Destroy() end
+    local bg = Instance.new("BodyGyro")
+    bg.Name = "WalkFarm_BG"
+    bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bg.P = 10000
+    bg.D = 500
+    bg.CFrame = hrp.CFrame
+    bg.Parent = hrp
+
+    local _, hum = getChar()
+    if hum then
+        hum.PlatformStand = true
     end
-    task.wait(0.1)
-    return (hrp.Position - pos).Magnitude < 15
+
+    print("[WalkFarm] JumpFly ВКЛ")
 end
 
--- ============ ХОДЬБА ============
-local function walkTo(targetPos, timeout)
-    local _, hum, hrp = getChar()
-    if not hum or not hrp then return false end
-    timeout = timeout or 15
-    hum:MoveTo(targetPos)
+local function stopJumpFly()
+    state.jumpActive = false
+    local _, _, hrp = getChar()
+    if hrp then
+        local bv = hrp:FindFirstChild("WalkFarm_BV")
+        if bv then bv:Destroy() end
+        local bg = hrp:FindFirstChild("WalkFarm_BG")
+        if bg then bg:Destroy() end
+    end
+    local _, hum = getChar()
+    if hum then
+        hum.PlatformStand = false
+    end
+    print("[WalkFarm] JumpFly ВЫКЛ")
+end
+
+local function jumpFlyTo(targetPos, timeout)
+    local _, _, hrp = getChar()
+    if not hrp then return false end
+    if not state.jumpActive then startJumpFly() end
+
+    timeout = timeout or 10
     local start = tick()
+
     while tick() - start < timeout do
         if not state.farmRunning then return false end
-        if not hum or not hrp or hum.Health <= 0 then return false end
-        if (hrp.Position - targetPos).Magnitude < 5 then
-            hum:MoveTo(hrp.Position)
+        local _, _, hrp2 = getChar()
+        if not hrp2 then return false end
+
+        local dist = (hrp2.Position - targetPos).Magnitude
+        if dist < 3 then
+            local bv = hrp2:FindFirstChild("WalkFarm_BV")
+            if bv then bv.Velocity = Vector3.new(0, 0, 0) end
             return true
         end
-        task.wait(0.1)
+
+        local dir = (targetPos - hrp2.Position).Unit
+        local speed = math.min(state.flySpeed, dist * 2)
+
+        local bv = hrp2:FindFirstChild("WalkFarm_BV")
+        if bv then
+            bv.Velocity = dir * speed
+        end
+
+        task.wait(0.03)
     end
-    hum:MoveTo(hrp.Position)
     return false
 end
 
@@ -187,12 +194,36 @@ local function findNearestPrompt()
     return nearest, nearestDist
 end
 
+-- ============ WALKSPEED BOOST (до 100) ============
+local function boostWalkSpeed(duration)
+    local _, hum = getChar()
+    if not hum then return end
+    state.saveWalkSpeed = hum.WalkSpeed
+    hum.WalkSpeed = state.boostWalkSpeed
+    print("[WalkFarm] WalkSpeed -> " .. state.boostWalkSpeed)
+
+    if state.restoreSpeedConn then
+        task.cancel(state.restoreSpeedConn)
+    end
+    state.restoreSpeedConn = task.delay(duration, function()
+        local _, hum2 = getChar()
+        if hum2 then
+            hum2.WalkSpeed = state.saveWalkSpeed
+            print("[WalkFarm] WalkSpeed -> " .. state.saveWalkSpeed)
+        end
+    end)
+end
+
 -- ============ GIVEME ============
 local function triggerGiveMe()
+    print("[WalkFarm] GiveMe...")
+    state.animating = true
+
+    -- WalkSpeed boost перед GiveMe
+    boostWalkSpeed(5)
+
     if state.giveMeMethod == "Invoke" or state.giveMeMethod == "Both" then
-        local ok = pcall(function() HoleGiveMe:InvokeServer() end)
-        print("[WalkFarm] HoleGiveMe:InvokeServer() ->", ok)
-        if ok then task.wait(1) return true end
+        pcall(function() HoleGiveMe:InvokeServer() end)
     end
     if state.giveMeMethod == "Click" or state.giveMeMethod == "Both" then
         pcall(function()
@@ -205,20 +236,58 @@ local function triggerGiveMe()
             if face then face.MouseButton1Click:Fire() end
         end)
     end
-    task.wait(1)
+
+    print("[WalkFarm] Ждём 3.5 сек (WalkSpeed " .. state.boostWalkSpeed .. ")...")
+    task.wait(3.5)
+    state.animating = false
+    print("[WalkFarm] Анимация завершена")
     return true
 end
 
--- ============ ДЕЙСТВИЯ ============
-local function grabItem()
-    unequipAll()
-    task.wait(0.1)
-    local prompt, dist = findNearestPrompt()
-    if not prompt then return false end
-    local part = prompt.Parent
-    teleportTo(part.Position)
+-- ============ БРОСОК СВЕРХУ ============
+local function topDrop()
+    if not state.selectedHole then return false end
+    local _, _, hrp = getChar()
+    if not hrp then return false end
+
+    local abovePos = state.selectedHole.Position + Vector3.new(0, state.dropHeight, 0)
+    print("[WalkFarm] Летим над дырой (Y+" .. state.dropHeight .. ")")
+    jumpFlyTo(abovePos, 15)
     task.wait(0.2)
-    return pcall(function()
+
+    local cam = workspace.CurrentCamera
+    if cam then
+        cam.CFrame = CFrame.new(hrp.Position, state.selectedHole.Position)
+    end
+    task.wait(0.15)
+
+    print("[WalkFarm] Кидаем сверху вниз")
+    local vp = workspace.CurrentCamera.ViewportSize
+    VirtualInputManager:SendMouseButtonEvent(vp.X/2, vp.Y/2, 0, true, game, 1)
+    task.wait(0.05)
+    VirtualInputManager:SendMouseButtonEvent(vp.X/2, vp.Y/2, 0, false, game, 1)
+    pcall(function() ThrowItem:FireServer() end)
+
+    state.farmCounter = state.farmCounter + 1
+    print("[WalkFarm] Брошено! Всего: " .. state.farmCounter)
+    return true
+end
+
+-- ============ ФАРМ ЦИКЛ ============
+local function doFarmCycle()
+    if not state.selectedHole then return false end
+
+    local prompt, dist = findNearestPrompt()
+    if not prompt then
+        print("[WalkFarm] Предмет не найден")
+        return false
+    end
+    local part = prompt.Parent
+    print("[WalkFarm] Летим к предмету")
+    jumpFlyTo(part.Position, 15)
+    task.wait(0.2)
+
+    pcall(function()
         if fireproximityprompt then
             fireproximityprompt(prompt)
         elseif prompt.InputHoldBegin then
@@ -227,46 +296,15 @@ local function grabItem()
             prompt:InputHoldEnd()
         end
     end)
-end
+    task.wait(0.3)
 
-local function aimCameraAt(targetPos)
-    local cam = workspace.CurrentCamera
-    if cam then cam.CFrame = CFrame.new(cam.CFrame.Position, targetPos) end
-end
+    topDrop()
+    task.wait(0.3)
 
-local function clickCenter()
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-    local vp = cam.ViewportSize
-    pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(vp.X/2, vp.Y/2, 0, true, game, 1)
-        task.wait(0.05)
-        VirtualInputManager:SendMouseButtonEvent(vp.X/2, vp.Y/2, 0, false, game, 1)
-    end)
-end
-
-local function tryThrow()
-    clickCenter()
-    pcall(function() ThrowItem:FireServer() end)
-end
-
--- ============ ФАРМ ЦИКЛ ============
-local function doFarmCycle()
-    if not state.selectedHole then return false end
-    if grabItem() then
-        task.wait(0.3)
-        walkTo(state.selectedHole.Position, 25)
-        task.wait(0.3)
-        aimCameraAt(state.selectedHole.Position)
-        task.wait(0.3)
-        tryThrow()
-        state.farmCounter = state.farmCounter + 1
-        if state.farmCounter % state.giveMeThreshold == 0 then
-            triggerGiveMe()
-        end
-        return true
+    if state.farmCounter % state.giveMeThreshold == 0 then
+        triggerGiveMe()
     end
-    return false
+    return true
 end
 
 local function startFarm()
@@ -274,53 +312,22 @@ local function startFarm()
     state.farmRunning = true
     state.farmCounter = 0
     setNoclip(true)
+    startJumpFly()
     task.spawn(function()
         while state.farmRunning and state.farmCounter < state.farmLimit do
             doFarmCycle()
             task.wait(0.3)
         end
         state.farmRunning = false
+        stopJumpFly()
         setNoclip(false)
     end)
 end
 
 local function stopFarm()
     state.farmRunning = false
+    stopJumpFly()
     setNoclip(false)
-end
-
--- ============ ТРЕНИРОВКА ЦИКЛ ============
-local function doTrainCycle()
-    if not equipDumbbell() then
-        print("[WalkFarm] Гантель не найдена")
-        return false
-    end
-    pcall(function()
-        LiftDumbbell:FireServer()
-        if state.spinSpam then DumbbellSpin:FireServer() end
-    end)
-    state.trainCounter = state.trainCounter + 1
-    return true
-end
-
-local function startTrain()
-    if state.trainRunning then return end
-    state.trainRunning = true
-    state.trainCounter = 0
-    task.spawn(function()
-        while state.trainRunning do
-            doTrainCycle()
-            task.wait(state.spamRate)
-        end
-        -- после остановки возвращаем гантель
-        equipDumbbell()
-    end)
-    print("[WalkFarm] Тренировка запущена")
-end
-
-local function stopTrain()
-    state.trainRunning = false
-    print("[WalkFarm] Тренировка остановлена. Всего:", state.trainCounter)
 end
 
 -- ============ ВИЗУАЛЫ ============
@@ -355,7 +362,6 @@ end
 
 local function setItemESP(on)
     visuals.itemESP = on
-    state.itemESPActive = on
     if not on then
         for _, obj in ipairs(state.visualObjects) do
             if obj.Name == "ItemESP" then obj:Destroy() end
@@ -410,12 +416,11 @@ end
 
 -- ============ GUI ============
 local Window = HIros:CreateWindow({
-    Name = "Walk Farm v13",
+    Name = "Walk Farm v17",
     Theme = "Purple",
     GlowMode = "rainbow",
 })
 
--- ============ ВКЛАДКА ФАРМ ============
 local FarmTab = Window:CreateTab({ Name = "Фарм", Icon = "⚡" })
 
 FarmTab:CreateSection({ Text = "База" })
@@ -436,7 +441,6 @@ FarmTab:CreateDropdown({
     CurrentOption = holeOptions[1],
     Callback = function(opt)
         state.selectedHole = holeMap[opt]
-        print("[WalkFarm] Выбрана база:", opt)
         if visuals.highlight then setHighlight(false); setHighlight(true) end
     end,
 })
@@ -454,7 +458,32 @@ FarmTab:CreateButton({
     end,
 })
 
-FarmTab:CreateSection({ Text = "Настройки фарма" })
+FarmTab:CreateSection({ Text = "Настройки полёта" })
+
+FarmTab:CreateSlider({
+    Name = "Скорость полёта",
+    Min = 10, Max = 100, Increment = 5,
+    CurrentValue = 30,
+    Callback = function(v) state.flySpeed = v end,
+})
+
+FarmTab:CreateSlider({
+    Name = "Высота сброса (studs)",
+    Min = 5, Max = 50, Increment = 1,
+    CurrentValue = 18,
+    Callback = function(v) state.dropHeight = v end,
+})
+
+FarmTab:CreateSection({ Text = "WalkSpeed Boost" })
+
+FarmTab:CreateSlider({
+    Name = "WalkSpeed во время GiveMe (до 100)",
+    Min = 20, Max = 100, Increment = 5,
+    CurrentValue = 100,
+    Callback = function(v) state.boostWalkSpeed = v end,
+})
+
+FarmTab:CreateSection({ Text = "Фарм" })
 
 FarmTab:CreateSlider({
     Name = "Лимит предметов",
@@ -477,13 +506,6 @@ FarmTab:CreateDropdown({
     Callback = function(opt) state.giveMeMethod = opt end,
 })
 
-FarmTab:CreateDropdown({
-    Name = "Способ ТП",
-    Options = {"Position", "CFrame", "PivotTo"},
-    CurrentOption = "Position",
-    Callback = function(opt) state.tpMethod = opt end,
-})
-
 FarmTab:CreateToggle({
     Name = "Noclip",
     CurrentValue = false,
@@ -493,10 +515,10 @@ FarmTab:CreateToggle({
 FarmTab:CreateSection({ Text = "Управление" })
 
 FarmTab:CreateButton({
-    Name = "▶ START ФАРМ",
+    Name = "▶ START ФАРМ (TopDrop)",
     Callback = function()
         startFarm()
-        Window:Notify({ Title = "Фарм", Content = "Запущен", Kind = "success" })
+        Window:Notify({ Title = "Фарм", Content = "TopDrop запущен", Kind = "success" })
     end,
 })
 
@@ -509,7 +531,25 @@ FarmTab:CreateButton({
 })
 
 FarmTab:CreateButton({
-    Name = "⚡ GiveMe вручную",
+    Name = "🛫 ТЕСТ полёта",
+    Callback = function()
+        task.spawn(function()
+            startJumpFly()
+            local _, _, hrp = getChar()
+            if hrp then
+                local startPos = hrp.Position
+                jumpFlyTo(startPos + Vector3.new(0, 50, 0), 5)
+                task.wait(1)
+                jumpFlyTo(startPos, 5)
+            end
+            stopJumpFly()
+            Window:Notify({ Title = "Полёт", Content = "Тест завершён", Kind = "info" })
+        end)
+    end,
+})
+
+FarmTab:CreateButton({
+    Name = "⚡ GiveMe вручную (WalkSpeed boost)",
     Callback = function()
         task.spawn(function()
             triggerGiveMe()
@@ -518,30 +558,71 @@ FarmTab:CreateButton({
     end,
 })
 
--- ============ ВКЛАДКА ТРЕНИРОВКА ============
+FarmTab:CreateButton({
+    Name = "🗑 TopDrop вручную",
+    Callback = function()
+        task.spawn(function()
+            startJumpFly()
+            topDrop()
+            task.wait(0.5)
+            stopJumpFly()
+            Window:Notify({ Title = "TopDrop", Content = "Брошено", Kind = "info" })
+        end)
+    end,
+})
+
+-- ============ ТРЕНИРОВКА ============
 local TrainTab = Window:CreateTab({ Name = "Тренировка", Icon = "💪" })
+
+local trainRunning = false
+local trainCounter = 0
+local spamRate = 0.1
 
 TrainTab:CreateSection({ Text = "Настройки" })
 
 TrainTab:CreateSlider({
-    Name = "Задержка между вызовами (сек)",
+    Name = "Задержка между вызовами",
     Min = 0.01, Max = 1, Increment = 0.01,
     CurrentValue = 0.1,
-    Callback = function(v) state.spamRate = v end,
+    Callback = function(v) spamRate = v end,
 })
 
-TrainTab:CreateToggle({
-    Name = "🔄 Спам DumbbellSpin",
-    CurrentValue = false,
-    Callback = function(v) state.spinSpam = v end,
-})
+local function equipDumbbell()
+    local _, hum = getChar()
+    if not hum then return false end
+    local bp = plr:FindFirstChild("Backpack")
+    local d = bp and bp:FindFirstChild("Dumbbell")
+    if not d then
+        local char = plr.Character
+        d = char and char:FindFirstChild("Dumbbell")
+    end
+    if not d then return false end
+    if d.Parent == plr.Character then return true end
+    pcall(function() hum:EquipTool(d) end)
+    task.wait(0.1)
+    return d.Parent == plr.Character
+end
 
-TrainTab:CreateSection({ Text = "Управление" })
+local function doTrainCycle()
+    if not equipDumbbell() then return false end
+    pcall(function() LiftDumbbell:FireServer() end)
+    trainCounter = trainCounter + 1
+    return true
+end
 
 TrainTab:CreateButton({
     Name = "▶ START ТРЕНИРОВКА",
     Callback = function()
-        startTrain()
+        if trainRunning then return end
+        trainRunning = true
+        trainCounter = 0
+        task.spawn(function()
+            while trainRunning do
+                doTrainCycle()
+                task.wait(spamRate)
+            end
+            equipDumbbell()
+        end)
         Window:Notify({ Title = "Тренировка", Content = "Запущена", Kind = "success" })
     end,
 })
@@ -549,44 +630,23 @@ TrainTab:CreateButton({
 TrainTab:CreateButton({
     Name = "■ STOP ТРЕНИРОВКА",
     Callback = function()
-        stopTrain()
-        Window:Notify({ Title = "Тренировка", Content = "Остановлена (" .. state.trainCounter .. ")", Kind = "warning" })
+        trainRunning = false
+        Window:Notify({ Title = "Тренировка", Content = "Остановлена (" .. trainCounter .. ")", Kind = "warning" })
     end,
 })
 
-TrainTab:CreateButton({
-    Name = "📊 Показать счётчик",
-    Callback = function()
-        Window:Notify({
-            Title = "Тренировка",
-            Content = "Всего повторений: " .. state.trainCounter,
-            Kind = "info",
-        })
-    end,
-})
-
-TrainTab:CreateButton({
-    Name = "💪 Один повтор вручную",
-    Callback = function()
-        task.spawn(function()
-            doTrainCycle()
-            Window:Notify({ Title = "Тренировка", Content = "1 повтор", Kind = "info" })
-        end)
-    end,
-})
-
--- ============ ВКЛАДКА ВИЗУАЛЫ ============
+-- ============ ВИЗУАЛЫ ============
 local VisualsTab = Window:CreateTab({ Name = "Визуалы", Icon = "🎨" })
 VisualsTab:CreateSection({ Text = "ESP" })
 VisualsTab:CreateToggle({ Name = "ESP дыры", CurrentValue = false, Callback = function(v) setHoleESP(v) end })
 VisualsTab:CreateToggle({ Name = "ESP предметов", CurrentValue = false, Callback = function(v) setItemESP(v) end })
 VisualsTab:CreateToggle({ Name = "Подсветка цели", CurrentValue = false, Callback = function(v) setHighlight(v) end })
 
--- ============ ВКЛАДКА ИНФО ============
+-- ============ ИНФО ============
 local InfoTab = Window:CreateTab({ Name = "Инфо", Icon = "ℹ" })
 InfoTab:CreateParagraph({
-    Title = "Walk Farm v13",
-    Content = "Тренировка и фарм РАЗДЕЛЕНЫ. Вкладка 'Фарм' — только фарм. Вкладка 'Тренировка' — только гантель. Библиотека: HIros 6.0.",
+    Title = "Walk Farm v17",
+    Content = "WalkSpeed boost до 100. JumpFly + TopDrop. Библиотека: HIros 6.0.",
 })
 
-print("скибиди")
+print("куркума😡")

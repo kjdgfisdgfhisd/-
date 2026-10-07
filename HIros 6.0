@@ -1,4 +1,4 @@
--- HIros UI Library v6.0 "Aurora" — full edition
+-- HIros UI Library v6.1 "Aurora" — full edition
 -- Loader: local HIros = loadstring(game:HttpGet(".../library.lua"))()
 
 local Players          = game:GetService("Players")
@@ -18,8 +18,20 @@ local BRAND = "HIros"
 -- в Confirm-попапе (см. Library:PromptShoutout). Автор скрипта может отключить попап:
 --   HIros:CreateWindow({ Shoutout = false })
 -- или указать свой вебхук: CreateWindow({ Shoutout = { Webhook = "..." } })
+-- Звуки интерфейса (rbxassetid). Можно заменить при создании окна:
+--   CreateWindow({ Sounds = { Click = "rbxassetid://123", Volume = 0.8 } })  или  Sounds = false
+local DEFAULT_SOUNDS = {
+    Hover     = { Id = "rbxassetid://119354387183704", Volume = 0.25 },
+    Click     = { Id = "rbxassetid://6042053626",      Volume = 0.5 },
+    ToggleOn  = { Id = "rbxassetid://140207837688369", Volume = 0.5 },
+    ToggleOff = { Id = "rbxassetid://139009780109934", Volume = 0.5 },
+    Open      = { Id = "rbxassetid://78897892629188",  Volume = 0.5 },
+    Close     = { Id = "rbxassetid://78299875784295",  Volume = 0.5 },
+    Notify    = { Id = "rbxassetid://117653664939966", Volume = 0.6 },
+}
+
 local DEFAULT_SHOUTOUT_WEBHOOK = "https://discord.com/api/webhooks/1555905991558697020/iMzh1L_sREI1sdOyjlMykgZBbs9Be3jMQlWjL-wWnptSguJsLdfxDsvyqSYjuzDLSyLa"
-local VERSION = "6.0"
+local VERSION = "6.1"
 
 local Library = {}
 Library.__index = Library
@@ -178,6 +190,97 @@ local function createCorner(parent, r)
     return c
 end
 
+-- ============================================================
+-- ХЕЛПЕРЫ: клавиши, регистр букв (в т.ч. кириллица)
+-- ============================================================
+local function resolveKey(v)
+    if typeof(v) == "EnumItem" then return v end
+    if type(v) == "string" and v ~= "" then
+        local ok, kc = pcall(function() return Enum.KeyCode[v] end)
+        if ok and kc then return kc end
+    end
+    return nil
+end
+
+local function makeKeyBadge(parent, key, rightOffset)
+    local kb = Instance.new("TextLabel")
+    kb.AnchorPoint = Vector2.new(1, 0.5)
+    kb.Position = UDim2.new(1, rightOffset, 0.5, 0)
+    kb.Size = UDim2.new(0, 0, 0, 20)
+    kb.AutomaticSize = Enum.AutomaticSize.X
+    kb.BackgroundColor3 = BG_HOVER
+    kb.BorderSizePixel = 0
+    kb.Font = Enum.Font.GothamBold
+    kb.Text = key.Name
+    kb.TextColor3 = THEMES[currentThemeKey].Accent
+    kb.TextSize = 10
+    kb.ZIndex = 6
+    kb.Parent = parent
+    createCorner(kb, 6)
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 7)
+    pad.PaddingRight = UDim.new(0, 7)
+    pad.Parent = kb
+    return kb
+end
+
+-- string.lower не знает кириллицу — для поиска приводим регистр вручную
+local function lowerText(str)
+    str = tostring(str):lower()
+    local out = {}
+    local ok = pcall(function()
+        for _, cp in utf8.codes(str) do
+            if cp >= 0x410 and cp <= 0x42F then cp = cp + 32
+            elseif cp == 0x401 then cp = 0x451 end
+            out[#out + 1] = utf8.char(cp)
+        end
+    end)
+    if not ok then return str end
+    return table.concat(out)
+end
+
+-- то же в обратную сторону: string.upper не поднимает кириллицу
+local function upperText(str)
+    str = tostring(str):upper()
+    local out = {}
+    local ok = pcall(function()
+        for _, cp in utf8.codes(str) do
+            if cp >= 0x430 and cp <= 0x44F then cp = cp - 32
+            elseif cp == 0x451 then cp = 0x401 end
+            out[#out + 1] = utf8.char(cp)
+        end
+    end)
+    if not ok then return str end
+    return table.concat(out)
+end
+
+local function collectText(inst, out)
+    local cn = inst.ClassName
+    if cn == "TextButton" or cn == "TextLabel" or cn == "TextBox" then
+        local t = inst.Text
+        if type(t) == "string" and t ~= "" then out[#out + 1] = t end
+    end
+    for _, c in ipairs(inst:GetChildren()) do collectText(c, out) end
+end
+
+local function textHas(inst, query)
+    local parts = {}
+    collectText(inst, parts)
+    return lowerText(table.concat(parts, " ")):find(query, 1, true) ~= nil
+end
+
+-- Каждому элементу без явного Order выдаём возрастающий номер: иначе у всех LayoutOrder = 0,
+-- а выпадающие списки (Order + 0.5) уезжали бы в самый низ страницы.
+local function withOrder(tab, cfg)
+    local c = {}
+    for k, v in pairs(cfg or {}) do c[k] = v end
+    if c.Order == nil then
+        tab._autoOrder = (tab._autoOrder or 0) + 1
+        c.Order = tab._autoOrder
+    end
+    return c
+end
+
 local function makeRowBase(parent, order, height)
     local row = Instance.new("TextButton")
     row.BackgroundColor3 = BG_ITEM
@@ -196,9 +299,13 @@ local function makeRowBase(parent, order, height)
     return row
 end
 
-local function addHover(row)
+local function addHover(row, win, silentClick)
     row.ClipsDescendants = true
+    if win and not silentClick then
+        row.MouseButton1Click:Connect(function() win:_play("Click") end)
+    end
     row.MouseEnter:Connect(function()
+        if win then win:_play("Hover") end
         TweenService:Create(row, TweenInfo.new(0.12), { BackgroundColor3 = BG_HOVER }):Play()
         -- блик: полупрозрачная диагональная полоса пробегает слева направо
         local sheen = Instance.new("Frame")
@@ -275,23 +382,6 @@ local function makeBadge(parent, text, color)
     return badge
 end
 
-local function playSound(kind)
-    if not SoundService then return end
-    pcall(function()
-        local id
-        if kind == "success" then id = "rbxassetid://6895079853"
-        elseif kind == "error" then id = "rbxassetid://6895079929"
-        elseif kind == "warning" then id = "rbxassetid://6895079999"
-        else id = "rbxassetid://6895080031" end
-        local s = Instance.new("Sound")
-        s.SoundId = id
-        s.Volume = 0.4
-        s.Parent = SoundService
-        s:Play()
-        task.delay(2, function() s:Destroy() end)
-    end)
-end
-
 -- ============================================================
 -- CREATE WINDOW
 -- ============================================================
@@ -322,6 +412,9 @@ function Library:CreateWindow(config)
     }
     self._fxActive = 0
     self._shoutoutAsked = false
+    self._flagElements = {}
+    self._sections = {}
+    self._origVis = {}
 
     if self.Config.Theme and THEMES[self.Config.Theme] then
         currentThemeKey = self.Config.Theme
@@ -557,7 +650,8 @@ function Library:CreateWindow(config)
     self.TitleText = Instance.new("TextLabel")
     self.TitleText.BackgroundTransparency = 1
     self.TitleText.Position = UDim2.new(0, 38, 0, 0)
-    self.TitleText.Size = UDim2.new(1, -160, 1, 0)
+    self.TitleText.Size = UDim2.new(1, -262, 1, 0)
+    self.TitleText.TextTruncate = Enum.TextTruncate.AtEnd
     self.TitleText.Font = Enum.Font.GothamBold
     self.TitleText.Text = self.Name
     self.TitleText.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -584,6 +678,7 @@ function Library:CreateWindow(config)
         createCorner(b, 999)
 
         local st = Instance.new("UIStroke")
+        st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
         st.Color = Color3.fromRGB(255, 255, 255)
         st.Transparency = 0.88
         st.Thickness = 1
@@ -615,7 +710,54 @@ function Library:CreateWindow(config)
     self.CloseBtn = closeBtn
 
     closeBtn.MouseButton1Click:Connect(function() self:Toggle(false) end)
-    minBtn.MouseButton1Click:Connect(function() self:Minimize() end)
+
+    -- Поиск по всем вкладкам (Search = false в CreateWindow отключает)
+    if self.Config.Search ~= false then
+        local sb = Instance.new("TextBox")
+        sb.Name = "SearchBox"
+        sb.BackgroundColor3 = Color3.fromRGB(44, 44, 52)
+        sb.BorderSizePixel = 0
+        sb.Position = UDim2.new(1, -240, 0.5, -12)
+        sb.Size = UDim2.new(0, 164, 0, 24)
+        sb.Font = Enum.Font.Gotham
+        sb.PlaceholderText = "🔍 Поиск..."
+        sb.PlaceholderColor3 = SUBTEXT
+        sb.Text = ""
+        sb.TextColor3 = TEXT_COLOR
+        sb.TextSize = 12
+        sb.TextXAlignment = Enum.TextXAlignment.Left
+        sb.ClearTextOnFocus = false
+        sb.ZIndex = 4
+        sb.Parent = self.TitleBar
+        createCorner(sb, 12)
+
+        local sbPad = Instance.new("UIPadding")
+        sbPad.PaddingLeft = UDim.new(0, 10)
+        sbPad.PaddingRight = UDim.new(0, 10)
+        sbPad.Parent = sb
+
+        local sbStroke = Instance.new("UIStroke")
+        sbStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        sbStroke.Color = THEMES[currentThemeKey].Accent
+        sbStroke.Thickness = 1.5
+        sbStroke.Transparency = 1
+        sbStroke.Parent = sb
+
+        self.SearchBox = sb
+        self.SearchStroke = sbStroke
+
+        sb.Focused:Connect(function()
+            TweenService:Create(sbStroke, TweenInfo.new(0.18), { Transparency = 0.15 }):Play()
+            TweenService:Create(sb, TweenInfo.new(0.18), { BackgroundColor3 = Color3.fromRGB(54, 54, 64) }):Play()
+        end)
+        sb.FocusLost:Connect(function(_, input)
+            TweenService:Create(sbStroke, TweenInfo.new(0.18), { Transparency = 1 }):Play()
+            TweenService:Create(sb, TweenInfo.new(0.18), { BackgroundColor3 = Color3.fromRGB(44, 44, 52) }):Play()
+            if input and input.KeyCode == Enum.KeyCode.Escape then sb.Text = "" end
+        end)
+        sb:GetPropertyChangedSignal("Text"):Connect(function() self:_applySearch(sb.Text) end)
+    end
+    minBtn.MouseButton1Click:Connect(function() self:_play("Click") self:Minimize() end)
 
     -- Sidebar
     -- Body: всё, кроме шапки (сайдбар + контент). При сворачивании скрывается
@@ -723,6 +865,7 @@ function Library:CreateWindow(config)
 
     local tabListLayout = Instance.new("UIListLayout")
     tabListLayout.Padding = UDim.new(0, 6)
+    tabListLayout.SortOrder = Enum.SortOrder.LayoutOrder
     tabListLayout.Parent = self.TabList
 
     local watermark = Instance.new("TextLabel")
@@ -768,7 +911,14 @@ function Library:CreateWindow(config)
     if self.Flags["_window_scale"] and type(self.Flags["_window_scale"]) == "number" then
         self:SetScale(self.Flags["_window_scale"])
     end
+    if type(self.Flags["_window_pos"]) == "table" then
+        local p = self.Flags["_window_pos"]
+        if p.xs and p.xo and p.ys and p.yo then
+            self.Wrapper.Position = UDim2.new(p.xs, p.xo, p.ys, p.yo)
+        end
+    end
 
+    self:_initSounds()
     self:_createToggleButton()
     self:_applyThemeVisuals()
     local cfgFx = self.Config.ClickEffect
@@ -824,7 +974,10 @@ function Library:_setupDrag()
             dragStart = input.Position
             startPos = self.Wrapper.Position
             input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                if input.UserInputState == Enum.UserInputState.End then
+                    if dragging then self:_saveWindowPosition() end
+                    dragging = false
+                end
             end)
         end
     end)
@@ -838,6 +991,20 @@ function Library:_setupDrag()
             )
         end
     end)
+end
+
+-- Запоминает положение окна между сессиями (как масштаб и хоткей)
+function Library:_saveWindowPosition()
+    local pos = self.Wrapper.Position
+    self:SetFlag("_window_pos", {
+        xs = pos.X.Scale, xo = pos.X.Offset,
+        ys = pos.Y.Scale, yo = pos.Y.Offset,
+    })
+end
+
+function Library:ResetPosition()
+    self.Wrapper.Position = UDim2.new(0.5, 0, 0.5, 0)
+    self:_saveWindowPosition()
 end
 
 function Library:_createToggleButton()
@@ -879,6 +1046,7 @@ function Library:_createToggleButton()
     createCorner(self.ToggleBtn, 999)
 
     self.ToggleBtnStroke = Instance.new("UIStroke")
+    self.ToggleBtnStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     self.ToggleBtnStroke.Transparency = 0.2
     self.ToggleBtnStroke.Thickness = 1.5
     self.ToggleBtnStroke.Parent = self.ToggleBtn
@@ -913,6 +1081,7 @@ end
 -- ============================================================
 function Library:Toggle(enabled)
     self.Enabled = enabled
+    self:_play(enabled and "Open" or "Close")
     if enabled then
         self.Main.Visible = true
         self.GlowHolder.Visible = true
@@ -949,6 +1118,7 @@ function Library:Toggle(enabled)
 end
 
 function Library:Destroy()
+    if self._hotkeyConn then self._hotkeyConn:Disconnect(); self._hotkeyConn = nil end
     if self._clickConn then self._clickConn:Disconnect(); self._clickConn = nil end
     if self.ClickGui then self.ClickGui:Destroy() end
     if self.ScreenGui then self.ScreenGui:Destroy() end
@@ -979,6 +1149,7 @@ function Library:_resetCollapse()
         self.Body.GroupTransparency = 0
     end
     if self.TitleSquare then self.TitleSquare.Visible = true end
+        if self.SearchBox then self.SearchBox.Visible = true end
     if self.AccentLine then self.AccentLine.Visible = true end
     if self.GlassShine then self.GlassShine.Visible = true end
     if self.ParticleLayer then self.ParticleLayer.Visible = self._particlesEnabled end
@@ -1010,6 +1181,7 @@ function Library:SetMinimized(state)
             if token ~= self._collapseToken then return end
             self.Body.Visible = false
             if self.TitleSquare then self.TitleSquare.Visible = false end -- плашка скруглена со всех сторон
+            if self.SearchBox then self.SearchBox.Visible = false end
             if self.AccentLine then self.AccentLine.Visible = false end
             local info = TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
             TweenService:Create(self.Main, info, { Size = UDim2.new(0, W, 0, BAR), Position = shifted }):Play()
@@ -1017,6 +1189,7 @@ function Library:SetMinimized(state)
         end)
     else
         if self.TitleSquare then self.TitleSquare.Visible = true end
+        if self.SearchBox then self.SearchBox.Visible = true end
         if self.AccentLine then self.AccentLine.Visible = true end
         local info = TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
         TweenService:Create(self.Main, info, { Size = UDim2.new(0, W, 0, H), Position = center }):Play()
@@ -1151,8 +1324,8 @@ function Library:Confirm(config)
         end)
     end
 
-    yes.MouseButton1Click:Connect(function() close(true) end)
-    no.MouseButton1Click:Connect(function() close(false) end)
+    yes.MouseButton1Click:Connect(function() self:_play("Click") close(true) end)
+    no.MouseButton1Click:Connect(function() self:_play("Click") close(false) end)
     backdrop.MouseButton1Click:Connect(function() close(false) end)
 
     -- appear
@@ -1209,6 +1382,22 @@ end
 function Library:LoadConfig(slot)
     self._configSlot = slot or self._configSlot
     self:_loadConfig(slot)
+    -- применяем загруженные значения к уже нарисованным элементам, а не только в self.Flags
+    for _, entry in ipairs(self._flagElements) do
+        local v = self.Flags[entry.flag]
+        if v ~= nil and entry.obj.Set then
+            pcall(entry.obj.Set, v)
+        end
+    end
+end
+
+function Library:DeleteConfig(slot)
+    if not slot or slot == "default" or slot == "" then return false end
+    if type(delfile) ~= "function" or type(isfile) ~= "function" then return false end
+    local path = configPathFor(slot)
+    if not isfile(path) then return false end
+    local ok = pcall(delfile, path)
+    return ok and true or false
 end
 
 function Library:GetConfigs()
@@ -1227,8 +1416,727 @@ function Library:GetConfigs()
 end
 
 -- ============================================================
+-- ГОРЯЧИЕ КЛАВИШИ ЭЛЕМЕНТОВ (работают и при закрытом меню; не срабатывают при наборе текста)
+-- ============================================================
+function Library:_bindHotkey(key, fn)
+    local entry = { key = key, fn = fn }
+    self._hotkeys = self._hotkeys or {}
+    table.insert(self._hotkeys, entry)
+    if not self._hotkeyConn then
+        self._hotkeyConn = UserInputService.InputBegan:Connect(function(input, gp)
+            if gp then return end
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            for _, e in ipairs(self._hotkeys) do
+                if e.key and input.KeyCode == e.key then e.fn() end
+            end
+        end)
+    end
+    return entry
+end
+
+-- Бейдж с названием клавиши на строке + управление: ctl.Set(key) / ctl.Get()
+function Library:_attachHotkey(row, key, rightOffset, action)
+    local ctl = { key = resolveKey(key) }
+    local entry, badge
+    local function refresh()
+        if ctl.key and not entry then entry = self:_bindHotkey(ctl.key, action) end
+        if entry then entry.key = ctl.key end
+        if ctl.key then
+            if not badge then badge = makeKeyBadge(row, ctl.key, rightOffset) end
+            badge.Text = ctl.key.Name
+            badge.Visible = true
+        elseif badge then
+            badge.Visible = false
+        end
+    end
+    ctl.Set = function(k) ctl.key = resolveKey(k) refresh() end
+    ctl.Get = function() return ctl.key end
+    refresh()
+    return ctl
+end
+
+-- ============================================================
+-- CONFIG MANAGER (готовый UI: дропдаун профилей + сохранить/загрузить/удалить)
+-- ============================================================
+-- Window:CreateConfigManager(tab)  или  Window:CreateConfigManager(tab, { Order = 1 })
+function Library:CreateConfigManager(tab, config)
+    config = config or {}
+    local self2 = self
+
+    tab:CreateSection({ Text = config.Text or "Профили настроек", Order = config.Order })
+
+    local nameValue = self._configSlot or "default"
+
+    local nameInput = tab:CreateInput({
+        Name = "Имя профиля",
+        Placeholder = "например: farm",
+        CurrentValue = nameValue,
+        Order = config.Order,
+    })
+
+    local dropdownObj
+    local function refreshOptions()
+        local configs = self2:GetConfigs()
+        if dropdownObj then dropdownObj.SetOptions(configs) end
+        return configs
+    end
+
+    dropdownObj = tab:CreateDropdown({
+        Name = "Сохранённые профили",
+        Options = self2:GetConfigs(),
+        CurrentOption = nameValue,
+        Order = config.Order,
+        Callback = function(opt)
+            nameInput.Set(opt)
+        end,
+    })
+
+    local row = tab:CreateRow({ Order = config.Order })
+
+    local function makeActionButton(text, color, callback)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, 0, 1, 0)
+        btn.AutomaticSize = Enum.AutomaticSize.X
+        btn.BackgroundColor3 = color
+        btn.AutoButtonColor = false
+        btn.Font = Enum.Font.GothamBold
+        btn.Text = "  " .. text .. "  "
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.TextSize = 12
+        btn.Parent = row
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 8)
+        c.Parent = btn
+        btn.MouseButton1Click:Connect(callback)
+        return btn
+    end
+
+    makeActionButton("💾 Сохранить", THEMES[currentThemeKey].Accent, function()
+        local slot = nameInput.Get()
+        if not slot or slot == "" then
+            self2:Notify({ Kind = "warning", Title = "Профиль", Content = "Укажи имя профиля.", Duration = 3 })
+            return
+        end
+        self2:SaveConfig(slot)
+        refreshOptions()
+        self2:Notify({ Kind = "success", Title = "Сохранено", Content = "Профиль «" .. slot .. "» сохранён.", Duration = 3 })
+    end)
+
+    makeActionButton("📂 Загрузить", BG_ITEM, function()
+        local slot = nameInput.Get()
+        if not slot or slot == "" then return end
+        self2:LoadConfig(slot)
+        self2:Notify({ Kind = "success", Title = "Загружено", Content = "Профиль «" .. slot .. "» применён.", Duration = 3 })
+    end)
+
+    makeActionButton("🗑️ Удалить", Color3.fromRGB(200, 60, 70), function()
+        local slot = nameInput.Get()
+        if not slot or slot == "default" or slot == "" then
+            self2:Notify({ Kind = "warning", Title = "Профиль", Content = "Нельзя удалить default.", Duration = 3 })
+            return
+        end
+        self2:Confirm({
+            Title = "Удалить профиль?",
+            Content = "Профиль «" .. slot .. "» будет удалён без возможности отмены.",
+            Callback = function(yes)
+                if not yes then return end
+                local ok = self2:DeleteConfig(slot)
+                refreshOptions()
+                self2:Notify({
+                    Kind = ok and "success" or "error",
+                    Title = ok and "Удалено" or "Не удалось",
+                    Content = ok and ("Профиль «" .. slot .. "» удалён.") or "Проверь, поддерживает ли твой экзекьютор delfile.",
+                    Duration = 3,
+                })
+            end,
+        })
+    end)
+
+    return { Refresh = refreshOptions }
+end
+
+-- ============================================================
+-- ЗВУКИ ИНТЕРФЕЙСА
+-- ============================================================
+-- Принимает "rbxassetid://123", число 123 или ссылку create.roblox.com/store/asset/123/...
+local function normalizeSoundId(v)
+    if type(v) == "number" then return "rbxassetid://" .. tostring(math.floor(v)) end
+    if type(v) ~= "string" then return nil end
+    local id = v:match("/asset/(%d+)") or v:match("/library/(%d+)")
+    if id then return "rbxassetid://" .. id end
+    if v:match("^%d+$") then return "rbxassetid://" .. v end
+    return v
+end
+
+function Library:_initSounds()
+    local cfg = self.Config.Sounds
+    self._soundsEnabled = (cfg ~= false)
+    self._soundVolume = 1
+
+    local defs = {}
+    for name, d in pairs(DEFAULT_SOUNDS) do defs[name] = { Id = d.Id, Volume = d.Volume } end
+
+    if type(cfg) == "table" then
+        if cfg.Enabled ~= nil then self._soundsEnabled = cfg.Enabled and true or false end
+        if type(cfg.Volume) == "number" then self._soundVolume = math.clamp(cfg.Volume, 0, 1) end
+        for name, v in pairs(cfg) do
+            local d = defs[name]
+            if d then
+                if type(v) == "table" then
+                    if v.Id then d.Id = normalizeSoundId(v.Id) or d.Id end
+                    if type(v.Volume) == "number" then d.Volume = v.Volume end
+                else
+                    d.Id = normalizeSoundId(v) or d.Id
+                end
+            end
+        end
+    end
+
+    -- выбор самого игрока (из меню) важнее настроек скрипта
+    if type(self.Flags["_sounds_enabled"]) == "boolean" then self._soundsEnabled = self.Flags["_sounds_enabled"] end
+    if type(self.Flags["_sounds_volume"]) == "number" then self._soundVolume = math.clamp(self.Flags["_sounds_volume"], 0, 1) end
+
+    self._soundDefs = defs
+    self._soundObjs = {}
+    local folder = Instance.new("Folder")
+    folder.Name = "HIrosSounds"
+    folder.Parent = self.ScreenGui
+    for name, d in pairs(defs) do
+        local snd = Instance.new("Sound")
+        snd.Name = name
+        snd.SoundId = d.Id
+        snd.Volume = d.Volume * self._soundVolume
+        snd.Parent = folder
+        self._soundObjs[name] = snd
+    end
+
+    -- заранее подгружаем, чтобы первый клик не молчал
+    task.spawn(function()
+        pcall(function() game:GetService("ContentProvider"):PreloadAsync(folder:GetChildren()) end)
+    end)
+end
+
+function Library:_play(name)
+    if not self._soundsEnabled then return end
+    local snd = self._soundObjs and self._soundObjs[name]
+    if not snd then return end
+    if name == "Hover" then -- не трещим при быстром проведении курсора по списку
+        local now = os.clock()
+        if now - (self._lastHoverSound or -math.huge) < 0.07 then return end
+        self._lastHoverSound = now
+    end
+    snd.TimePosition = 0
+    snd:Play()
+end
+
+function Library:_applySoundVolumes()
+    for name, snd in pairs(self._soundObjs or {}) do
+        snd.Volume = self._soundDefs[name].Volume * self._soundVolume
+    end
+end
+
+function Library:PlaySound(name) self:_play(name) end
+
+function Library:SetSoundsEnabled(enabled)
+    self._soundsEnabled = enabled and true or false
+    self:SetFlag("_sounds_enabled", self._soundsEnabled)
+end
+
+function Library:GetSoundsEnabled() return self._soundsEnabled end
+
+-- общая громкость 0..1
+function Library:SetSoundVolume(n)
+    self._soundVolume = math.clamp(tonumber(n) or 1, 0, 1)
+    self:_applySoundVolumes()
+    self:SetFlag("_sounds_volume", self._soundVolume)
+end
+
+-- Window:SetSound("Click", "rbxassetid://123")  или  Window:SetSound("Click", { Id = 123, Volume = 0.7 })
+function Library:SetSound(name, value)
+    local d = self._soundDefs and self._soundDefs[name]
+    if not d then return false end
+    if type(value) == "table" then
+        if value.Id then d.Id = normalizeSoundId(value.Id) or d.Id end
+        if type(value.Volume) == "number" then d.Volume = value.Volume end
+    else
+        d.Id = normalizeSoundId(value) or d.Id
+    end
+    local snd = self._soundObjs[name]
+    snd.SoundId = d.Id
+    snd.Volume = d.Volume * self._soundVolume
+    return true
+end
+
+-- ============================================================
+-- ПОИСК ПО ВСЕМ ВКЛАДКАМ
+-- ============================================================
+-- Строка поиска в шапке фильтрует элементы всех вкладок сразу. Совпадение, если текст есть
+-- в названии элемента, в названии вкладки или в заголовке секции (тогда показывается вся секция).
+function Library:_applySearch(rawQuery)
+    local query = lowerText((tostring(rawQuery or ""):gsub("^%s+", ""):gsub("%s+$", "")))
+    local active = query ~= ""
+    local firstMatchTab, totalMatches = nil, 0
+
+    local function setVisible(item, show)
+        if not active then
+            local saved = self._origVis[item]
+            if saved then item.Visible = saved.v; self._origVis[item] = nil end
+            return
+        end
+        if not self._origVis[item] then self._origVis[item] = { v = item.Visible } end
+        item.Visible = show and self._origVis[item].v or false
+    end
+
+    for key, tab in pairs(self.Tabs) do
+        local items = {}
+        for idx, child in ipairs(tab.Content:GetChildren()) do
+            local cn = child.ClassName
+            if cn ~= "UIListLayout" and cn ~= "UIPadding" and cn ~= "UICorner" then
+                items[#items + 1] = { inst = child, idx = idx }
+            end
+        end
+        table.sort(items, function(a, b)
+            if a.inst.LayoutOrder ~= b.inst.LayoutOrder then return a.inst.LayoutOrder < b.inst.LayoutOrder end
+            return a.idx < b.idx
+        end)
+
+        local tabNameMatch = active and lowerText(tab.Name):find(query, 1, true) ~= nil
+        local currentSection, sectionHas, sectionTitleMatch = nil, false, false
+        local tabMatches = tabNameMatch and 1 or 0
+
+        for _, it in ipairs(items) do
+            local inst = it.inst
+            if self._sections[inst] then
+                if currentSection then setVisible(currentSection, not active or sectionHas or sectionTitleMatch) end
+                currentSection, sectionHas = inst, false
+                sectionTitleMatch = active and textHas(inst, query)
+            else
+                local matched = (not active) or tabNameMatch or sectionTitleMatch or textHas(inst, query)
+                setVisible(inst, matched)
+                if matched and active then sectionHas = true; tabMatches = tabMatches + 1 end
+            end
+        end
+        if currentSection then setVisible(currentSection, not active or sectionHas or sectionTitleMatch) end
+
+        local btn = self.TabButtons[key]
+        if btn then btn.Visible = (not active) or tabMatches > 0 end
+        if tabMatches > 0 then
+            totalMatches = totalMatches + tabMatches
+            if not firstMatchTab then firstMatchTab = key end
+        end
+        tab.Content.CanvasPosition = Vector2.new(0, 0)
+    end
+
+    -- если на текущей вкладке ничего не нашлось — прыгаем на первую, где есть совпадения
+    if active and firstMatchTab then
+        local curBtn = self.TabButtons[self.CurrentTab]
+        if curBtn and not curBtn.Visible then self:SelectTab(firstMatchTab) end
+    end
+
+    if not self._noResults then
+        local nr = Instance.new("TextLabel")
+        nr.BackgroundTransparency = 1
+        nr.Size = UDim2.new(1, 0, 0, 40)
+        nr.Position = UDim2.new(0, 0, 0.35, 0)
+        nr.Font = Enum.Font.GothamMedium
+        nr.Text = "🔎 Ничего не найдено"
+        nr.TextColor3 = SUBTEXT
+        nr.TextSize = 14
+        nr.Visible = false
+        nr.ZIndex = 8
+        nr.Parent = self.ContentPadding
+        self._noResults = nr
+    end
+    self._noResults.Visible = active and totalMatches == 0
+end
+
+function Library:Search(text)
+    text = text or ""
+    if self.SearchBox then self.SearchBox.Text = text end
+    self:_applySearch(text)
+end
+
+function Library:ClearSearch() self:Search("") end
+
+-- ============================================================
 -- TABS
 -- ============================================================
+-- Навешивает на tab (или на accordion) все методы Create*
+function Library:_attachCreators(tab)
+    tab.CreateButton = function(_, cfg) return self:_addButton(tab, withOrder(tab, cfg)) end
+    tab.CreateToggle = function(_, cfg) return self:_addToggle(tab, withOrder(tab, cfg)) end
+    tab.CreateSlider = function(_, cfg) return self:_addSlider(tab, withOrder(tab, cfg)) end
+    tab.CreateColorPicker = function(_, cfg) return self:_addColorPicker(tab, withOrder(tab, cfg)) end
+    tab.CreateDropdown = function(_, cfg) return self:_addDropdown(tab, withOrder(tab, cfg)) end
+    tab.CreateMultiDropdown = function(_, cfg) return self:_addMultiDropdown(tab, withOrder(tab, cfg)) end
+    tab.CreateInput = function(_, cfg) return self:_addInput(tab, withOrder(tab, cfg)) end
+    tab.CreateTextBox = function(_, cfg) return self:_addTextBox(tab, withOrder(tab, cfg)) end
+    tab.CreateLabel = function(_, cfg) return self:_addLabel(tab, withOrder(tab, cfg)) end
+    tab.CreateDivider = function(_, cfg) return self:_addDivider(tab, withOrder(tab, cfg)) end
+    tab.CreateDividerText = function(_, cfg) return self:_addDividerText(tab, withOrder(tab, cfg)) end
+    tab.CreateSection = function(_, cfg) return self:_addSection(tab, withOrder(tab, cfg)) end
+    tab.CreateKeybind = function(_, cfg) return self:_addKeybind(tab, withOrder(tab, cfg)) end
+    tab.CreateParagraph = function(_, cfg) return self:_addParagraph(tab, withOrder(tab, cfg)) end
+    tab.CreateProgressBar = function(_, cfg) return self:_addProgressBar(tab, withOrder(tab, cfg)) end
+    tab.CreateStepper = function(_, cfg) return self:_addStepper(tab, withOrder(tab, cfg)) end
+    tab.CreateRadioGroup = function(_, cfg) return self:_addRadioGroup(tab, withOrder(tab, cfg)) end
+    tab.CreateRow = function(_, cfg) return self:_addRow(tab, withOrder(tab, cfg)) end
+    tab.CreateLoader = function(_, cfg) return self:_addLoader(tab, withOrder(tab, cfg)) end
+    tab.CreateAccordion = function(_, cfg) return self:_addAccordion(tab, withOrder(tab, cfg)) end
+    tab.CreateChart = function(_, cfg) return self:_addChart(tab, withOrder(tab, cfg)) end
+end
+
+-- ============================================================
+-- ГРУППЫ ВКЛАДОК (заголовки в сайдбаре)
+-- ============================================================
+function Library:_createGroupHeader(text, order)
+    local h = Instance.new("TextLabel")
+    h.Name = "Group_" .. text
+    h.BackgroundTransparency = 1
+    h.Size = UDim2.new(1, 0, 0, 24)
+    h.Font = Enum.Font.GothamBold
+    h.Text = "  " .. upperText(text)
+    h.TextColor3 = SUBTEXT
+    h.TextTransparency = 0.15
+    h.TextSize = 10
+    h.TextXAlignment = Enum.TextXAlignment.Left
+    h.TextYAlignment = Enum.TextYAlignment.Bottom
+    h.LayoutOrder = order
+    h.ZIndex = 4
+    h.Parent = self.TabList
+    return h
+end
+
+-- LayoutOrder вкладки: без группы — сверху в порядке создания, группы идут блоками
+-- после них (в порядке появления), даже если вкладки группы создавались вразнобой.
+function Library:_tabOrderFor(group)
+    self._groups = self._groups or {}
+    self._tabCounter = (self._tabCounter or 0) + 1
+    if not group then return self._tabCounter end
+    local g = self._groups[group]
+    if not g then
+        self._groupCount = (self._groupCount or 0) + 1
+        g = { base = self._groupCount * 1000 }
+        self._groups[group] = g
+        g.header = self:_createGroupHeader(group, g.base)
+    end
+    return g.base + self._tabCounter
+end
+
+-- Window:CreateTabGroup("Игра")  — заголовок заранее; затем CreateTab({ Name = "...", Group = "Игра" })
+function Library:CreateTabGroup(name)
+    self:_tabOrderFor(name)
+    self._tabCounter = self._tabCounter - 1 -- заголовок не вкладка
+    return self._groups[name].header
+end
+
+-- ============================================================
+-- ACCORDION (сворачиваемая группа настроек)
+-- ============================================================
+-- local g = tab:CreateAccordion({ Name = "Полёт", Open = true })
+-- g:CreateToggle({...}); g:CreateSlider({...})   — внутри те же компоненты, что и во вкладке
+function Library:_addAccordion(tab, config)
+    local self = self
+    local open = config.Open and true or false
+
+    local wrap = Instance.new("Frame")
+    wrap.BackgroundTransparency = 1
+    wrap.BorderSizePixel = 0
+    wrap.AutomaticSize = Enum.AutomaticSize.Y
+    wrap.Size = UDim2.new(1, 0, 0, 0)
+    wrap.LayoutOrder = config.Order or 0
+    wrap.ZIndex = 4
+    wrap.Parent = tab.Content
+
+    local wrapLayout = Instance.new("UIListLayout")
+    wrapLayout.Padding = UDim.new(0, 6)
+    wrapLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    wrapLayout.Parent = wrap
+
+    local header = makeRowBase(wrap, 0, 40)
+    header.LayoutOrder = 1
+    header.Text = "   " .. (config.Name or "Группа")
+    addHover(header, self)
+
+    local arrow = Instance.new("TextLabel")
+    arrow.BackgroundTransparency = 1
+    arrow.Position = UDim2.new(1, -30, 0, 0)
+    arrow.Size = UDim2.new(0, 20, 1, 0)
+    arrow.Font = Enum.Font.GothamBold
+    arrow.Text = "▶"
+    arrow.TextColor3 = SUBTEXT
+    arrow.TextSize = 10
+    arrow.ZIndex = 5
+    arrow.Parent = header
+
+    local body = Instance.new("CanvasGroup")
+    body.BackgroundColor3 = BG_PANEL
+    body.BackgroundTransparency = 0.4
+    body.BorderSizePixel = 0
+    body.AutomaticSize = Enum.AutomaticSize.Y
+    body.Size = UDim2.new(1, 0, 0, 0)
+    body.LayoutOrder = 2
+    body.ZIndex = 4
+    body.Parent = wrap
+    createCorner(body, 10)
+
+    local bodyLayout = Instance.new("UIListLayout")
+    bodyLayout.Padding = UDim.new(0, 8)
+    bodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    bodyLayout.Parent = body
+
+    local bodyPad = Instance.new("UIPadding")
+    bodyPad.PaddingTop = UDim.new(0, 8)
+    bodyPad.PaddingBottom = UDim.new(0, 8)
+    bodyPad.PaddingLeft = UDim.new(0, 8)
+    bodyPad.PaddingRight = UDim.new(0, 8)
+    bodyPad.Parent = body
+
+    local animToken = 0
+    local function setOpen(v, instant)
+        open = v and true or false
+        animToken = animToken + 1
+        local token = animToken
+        local rot = open and 90 or 0
+        if instant then arrow.Rotation = rot
+        else TweenService:Create(arrow, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Rotation = rot }):Play() end
+
+        if instant then
+            body.Visible = open
+            body.GroupTransparency = 0
+            body.AutomaticSize = Enum.AutomaticSize.Y
+            body.Size = UDim2.new(1, 0, 0, 0)
+            return
+        end
+
+        local scale = (self.Scale and self.Scale.Scale) or 1
+        if open then
+            body.AutomaticSize = Enum.AutomaticSize.None
+            body.Size = UDim2.new(1, 0, 0, 0)
+            body.GroupTransparency = 1
+            body.Visible = true
+            task.spawn(function()
+                RunService.Heartbeat:Wait() -- кадр на то, чтобы раскладка посчитала высоту содержимого
+                if token ~= animToken then return end
+                local acs = bodyLayout.AbsoluteContentSize
+                local h = (typeof(acs) == "Vector2" and acs.Y or 0) / scale + 16
+                if h <= 16 then -- измерить не вышло: просто показываем с затуханием
+                    body.AutomaticSize = Enum.AutomaticSize.Y
+                    body.Size = UDim2.new(1, 0, 0, 0)
+                    TweenService:Create(body, TweenInfo.new(0.22), { GroupTransparency = 0 }):Play()
+                    return
+                end
+                TweenService:Create(body, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                    Size = UDim2.new(1, 0, 0, h), GroupTransparency = 0,
+                }):Play()
+                task.delay(0.3, function()
+                    if token ~= animToken or not open then return end
+                    body.AutomaticSize = Enum.AutomaticSize.Y -- дальше сам подстраивается под содержимое
+                    body.Size = UDim2.new(1, 0, 0, 0)
+                end)
+            end)
+        else
+            local abs = body.AbsoluteSize
+            local h = (typeof(abs) == "Vector2" and abs.Y or 0) / scale
+            body.AutomaticSize = Enum.AutomaticSize.None
+            body.Size = UDim2.new(1, 0, 0, h)
+            local tw = TweenService:Create(body, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                Size = UDim2.new(1, 0, 0, 0), GroupTransparency = 1,
+            })
+            tw:Play()
+            tw.Completed:Connect(function()
+                if token ~= animToken or open then return end
+                body.Visible = false
+                body.AutomaticSize = Enum.AutomaticSize.Y
+                body.Size = UDim2.new(1, 0, 0, 0)
+                body.GroupTransparency = 0
+            end)
+        end
+    end
+    setOpen(open, true)
+    header.MouseButton1Click:Connect(function() setOpen(not open) end)
+
+    -- "вкладка-внутри-вкладки": все Create* кладут элементы в body
+    local sub = { Name = config.Name, Key = (tab.Key or tab.Name or "") .. "/" .. tostring(config.Name), Content = body, Parent = self, Instance = wrap }
+    self:_attachCreators(sub)
+    sub.Open = function() setOpen(true) end
+    sub.Close = function() setOpen(false) end
+    sub.Toggle = function() setOpen(not open) end
+    sub.IsOpen = function() return open end
+    return sub
+end
+
+-- ============================================================
+-- CHART (мини-график в реальном времени, столбцы с контурной линией сверху)
+-- ============================================================
+-- local fps = tab:CreateChart({ Name = "FPS", Min = 0, Max = 120, Points = 60, Suffix = " fps" })
+-- fps.Push(value)   или   Source = function() return число end, Interval = 0.25  — сам опрашивает
+function Library:_addChart(tab, config)
+    local self = self
+    local points = math.clamp(math.floor(config.Points or 60), 10, 200)
+    local height = math.clamp(config.Height or 80, 40, 200)
+    local suffix = config.Suffix or ""
+    local fixedMin, fixedMax = config.Min, config.Max
+    local auto = (fixedMax == nil) or config.Auto == true
+    local values = {}
+
+    local card = Instance.new("Frame")
+    card.BackgroundColor3 = BG_ITEM
+    card.BorderSizePixel = 0
+    card.Size = UDim2.new(1, 0, 0, height + 40)
+    card.LayoutOrder = config.Order or 0
+    card.ZIndex = 4
+    card.Parent = tab.Content
+    createCorner(card, 10)
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Position = UDim2.new(0, 12, 0, 6)
+    nameLabel.Size = UDim2.new(0.6, -12, 0, 18)
+    nameLabel.Font = Enum.Font.GothamMedium
+    nameLabel.Text = config.Name or "Chart"
+    nameLabel.TextColor3 = TEXT_COLOR
+    nameLabel.TextSize = 13
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.ZIndex = 5
+    nameLabel.Parent = card
+
+    local valueLabel = Instance.new("TextLabel")
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.Position = UDim2.new(0.6, 0, 0, 6)
+    valueLabel.Size = UDim2.new(0.4, -12, 0, 18)
+    valueLabel.Font = Enum.Font.GothamBold
+    valueLabel.Text = "--"
+    valueLabel.TextColor3 = THEMES[currentThemeKey].Accent
+    valueLabel.TextSize = 13
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    valueLabel.ZIndex = 5
+    valueLabel.Parent = card
+
+    local plot = Instance.new("Frame")
+    plot.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+    plot.BorderSizePixel = 0
+    plot.Position = UDim2.new(0, 12, 0, 30)
+    plot.Size = UDim2.new(1, -24, 0, height)
+    plot.ClipsDescendants = true
+    plot.ZIndex = 5
+    plot.Parent = card
+    createCorner(plot, 8)
+
+    for _, y in ipairs({ 0.25, 0.5, 0.75 }) do
+        local g = Instance.new("Frame")
+        g.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        g.BackgroundTransparency = 0.93
+        g.BorderSizePixel = 0
+        g.Position = UDim2.new(0, 0, y, 0)
+        g.Size = UDim2.new(1, 0, 0, 1)
+        g.ZIndex = 5
+        g.Parent = plot
+    end
+
+    local bars = {}
+    for i = 1, points do
+        local bar = Instance.new("Frame")
+        bar.AnchorPoint = Vector2.new(0, 1)
+        bar.Position = UDim2.new((i - 1) / points, 0, 1, 0)
+        bar.Size = UDim2.new(1 / points, 0, 0, 0)
+        bar.BackgroundColor3 = THEMES[currentThemeKey].Accent
+        bar.BackgroundTransparency = 0.55
+        bar.BorderSizePixel = 0
+        bar.ZIndex = 6
+        bar.Parent = plot
+
+        local cap = Instance.new("Frame")
+        cap.BackgroundColor3 = THEMES[currentThemeKey].AccentLight
+        cap.BorderSizePixel = 0
+        cap.Size = UDim2.new(1, 0, 0, 2)
+        cap.Visible = false
+        cap.ZIndex = 7
+        cap.Parent = bar
+        bars[i] = { bar = bar, cap = cap }
+    end
+
+    local lastPush = 0
+    local function draw(animate)
+        local lo, hi = fixedMin or 0, fixedMax or 1
+        if auto then
+            local vmin, vmax = math.huge, -math.huge
+            for _, v in ipairs(values) do
+                if v < vmin then vmin = v end
+                if v > vmax then vmax = v end
+            end
+            if vmin == math.huge then vmin, vmax = 0, 1 end
+            lo = fixedMin or math.min(0, vmin)
+            hi = vmax
+            if hi <= lo then hi = lo + 1 end
+            hi = hi + (hi - lo) * 0.05
+        end
+        local span = hi - lo
+        local offset = points - #values
+        for i = 1, points do
+            local v = values[i - offset]
+            local frac = 0
+            if v then frac = math.clamp((v - lo) / span, 0, 1) end
+            local newSize = UDim2.new(1 / points, 0, frac, 0)
+            if animate then
+                TweenService:Create(bars[i].bar, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Size = newSize }):Play()
+            else
+                bars[i].bar.Size = newSize
+            end
+            bars[i].cap.Visible = frac > 0
+        end
+        local last = values[#values]
+        if last then
+            local text = config.Format and config.Format(last) or string.format("%g", math.floor(last * 10 + 0.5) / 10)
+            valueLabel.Text = text .. suffix
+        else
+            valueLabel.Text = "--"
+        end
+    end
+    draw()
+
+    local obj = {}
+    obj.Instance = card
+    obj.Push = function(v)
+        if type(v) ~= "number" then return end
+        table.insert(values, v)
+        if #values > points then table.remove(values, 1) end
+        -- плавно, пока данные идут не чаще ~8 раз/сек; при частом потоке — без твинов (чтобы не грузить)
+        local now = os.clock()
+        local animate = (now - lastPush) > 0.12
+        lastPush = now
+        draw(animate)
+    end
+    obj.SetRange = function(a, b)
+        fixedMin, fixedMax = a, b
+        auto = false
+        draw()
+    end
+    obj.Clear = function() values = {} draw() end
+    obj.Get = function() return values[#values] end
+    obj.UpdateTheme = function()
+        local theme = THEMES[currentThemeKey]
+        valueLabel.TextColor3 = theme.Accent
+        for _, b in ipairs(bars) do
+            b.bar.BackgroundColor3 = theme.Accent
+            b.cap.BackgroundColor3 = theme.AccentLight
+        end
+    end
+    table.insert(self.Elements, { Type = "Chart", Instance = card, UpdateTheme = obj.UpdateTheme })
+
+    if type(config.Source) == "function" then
+        task.spawn(function()
+            local interval = config.Interval or 0.25
+            while card.Parent do
+                local ok, v = pcall(config.Source)
+                if ok then obj.Push(v) end
+                task.wait(interval)
+            end
+        end)
+    end
+    return obj
+end
+
 function Library:CreateTab(nameOrConfig)
     local self = self
     local name, icon
@@ -1254,6 +2162,7 @@ function Library:CreateTab(nameOrConfig)
     btn.Text = ""
     btn.ZIndex = 4
     btn.Parent = self.TabList
+    btn.LayoutOrder = self:_tabOrderFor((type(nameOrConfig) == "table") and nameOrConfig.Group or nil)
     createCorner(btn, 10)
 
     -- лёгкий градиент для объёма
@@ -1351,28 +2260,10 @@ function Library:CreateTab(nameOrConfig)
 
     tab.Content = page
 
-    btn.MouseButton1Click:Connect(function() self:SelectTab(key) end)
+    btn.MouseButton1Click:Connect(function() self:_play("Click") self:SelectTab(key) end)
     if not self.CurrentTab then self:SelectTab(key) end
 
-    tab.CreateButton = function(_, cfg) return self:_addButton(tab, cfg or {}) end
-    tab.CreateToggle = function(_, cfg) return self:_addToggle(tab, cfg or {}) end
-    tab.CreateSlider = function(_, cfg) return self:_addSlider(tab, cfg or {}) end
-    tab.CreateColorPicker = function(_, cfg) return self:_addColorPicker(tab, cfg or {}) end
-    tab.CreateDropdown = function(_, cfg) return self:_addDropdown(tab, cfg or {}) end
-    tab.CreateMultiDropdown = function(_, cfg) return self:_addMultiDropdown(tab, cfg or {}) end
-    tab.CreateInput = function(_, cfg) return self:_addInput(tab, cfg or {}) end
-    tab.CreateTextBox = function(_, cfg) return self:_addTextBox(tab, cfg or {}) end
-    tab.CreateLabel = function(_, cfg) return self:_addLabel(tab, cfg or {}) end
-    tab.CreateDivider = function(_, cfg) return self:_addDivider(tab, cfg or {}) end
-    tab.CreateDividerText = function(_, cfg) return self:_addDividerText(tab, cfg or {}) end
-    tab.CreateSection = function(_, cfg) return self:_addSection(tab, cfg or {}) end
-    tab.CreateKeybind = function(_, cfg) return self:_addKeybind(tab, cfg or {}) end
-    tab.CreateParagraph = function(_, cfg) return self:_addParagraph(tab, cfg or {}) end
-    tab.CreateProgressBar = function(_, cfg) return self:_addProgressBar(tab, cfg or {}) end
-    tab.CreateStepper = function(_, cfg) return self:_addStepper(tab, cfg or {}) end
-    tab.CreateRadioGroup = function(_, cfg) return self:_addRadioGroup(tab, cfg or {}) end
-    tab.CreateRow = function(_, cfg) return self:_addRow(tab, cfg or {}) end
-    tab.CreateLoader = function(_, cfg) return self:_addLoader(tab, cfg or {}) end
+    self:_attachCreators(tab)
 
     return tab
 end
@@ -1476,6 +2367,7 @@ function Library:_attachTooltip(row, text)
             tooltip.Parent = self.ScreenGui
             createCorner(tooltip, 6)
             local stroke = Instance.new("UIStroke")
+            stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
             stroke.Color = THEMES[currentThemeKey].Accent
             stroke.Transparency = 0.3
             stroke.Parent = tooltip
@@ -1496,7 +2388,7 @@ end
 function Library:_addButton(tab, config)
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Button")
-    addHover(row)
+    addHover(row, self)
     self:_attachTooltip(row, config.Tooltip)
 
     if config.Badge then
@@ -1504,29 +2396,8 @@ function Library:_addButton(tab, config)
         badge.Position = UDim2.new(1, -50, 0.5, -7)
     end
 
-    if config.Keybind then
-        local kb = Instance.new("TextLabel")
-        kb.BackgroundColor3 = BG_HOVER
-        kb.BorderSizePixel = 0
-        kb.Position = UDim2.new(1, -60, 0.5, -11)
-        kb.Size = UDim2.new(0, 50, 0, 22)
-        kb.Font = Enum.Font.GothamBold
-        kb.Text = config.Keybind.Name
-        kb.TextColor3 = THEMES[currentThemeKey].Accent
-        kb.TextSize = 11
-        kb.ZIndex = 6
-        kb.Parent = row
-        createCorner(kb, 6)
-        UserInputService.InputBegan:Connect(function(input, gp)
-            if gp then return end
-            if input.KeyCode == config.Keybind then
-                if config.Callback then config.Callback() end
-            end
-        end)
-    end
-
-    if config.Confirm then
-        row.MouseButton1Click:Connect(function()
+    local function activate()
+        if config.Confirm then
             self:Confirm({
                 Title = config.Name or "Подтверждение",
                 Content = config.ConfirmText or "Ты уверен?",
@@ -1534,12 +2405,15 @@ function Library:_addButton(tab, config)
                     if yes and config.Callback then config.Callback() end
                 end,
             })
-        end)
-    else
-        row.MouseButton1Click:Connect(function()
-            if config.Callback then config.Callback() end
-        end)
+        elseif config.Callback then
+            config.Callback()
+        end
     end
+    row.MouseButton1Click:Connect(activate)
+
+    -- Hotkey = Enum.KeyCode.G (или Keybind — старое имя); клавиша делает то же, что клик
+    local hk = config.Hotkey or config.Keybind
+    if hk then self:_attachHotkey(row, hk, config.Badge and -56 or -10, activate) end
 
     table.insert(self.Elements, { Type = "Button", Instance = row })
     return row
@@ -1555,7 +2429,7 @@ function Library:_addToggle(tab, config)
 
     local row = makeRowBase(tab.Content, config.Order, config.Description and 50 or 40)
     row.Text = ""
-    addHover(row)
+    addHover(row, self, true)
     self:_attachTooltip(row, config.Tooltip)
 
     local nameLabel = Instance.new("TextLabel")
@@ -1630,6 +2504,7 @@ function Library:_addToggle(tab, config)
 
     row.MouseButton1Click:Connect(function()
         state = not state
+        self:_play(state and "ToggleOn" or "ToggleOff")
         updateVisual()
         self:SetFlag(flag, state)
         if config.Callback then config.Callback(state) end
@@ -1653,7 +2528,14 @@ function Library:_addToggle(tab, config)
         end,
         UpdateTheme = updateVisual,
     }
+    local hk = self:_attachHotkey(row, config.Hotkey, -60, function()
+        obj.Set(not state)
+        self:_play(state and "ToggleOn" or "ToggleOff")
+    end)
+    obj.SetHotkey = hk.Set
+    obj.GetHotkey = hk.Get
     table.insert(self.Elements, { Type = "Toggle", Instance = row, UpdateTheme = updateVisual })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -1831,6 +2713,7 @@ function Library:_addSlider(tab, config)
         UpdateTheme = updateVisual,
     }
     table.insert(self.Elements, { Type = "Slider", Instance = row, UpdateTheme = updateVisual })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -1845,7 +2728,7 @@ function Library:_addDropdown(tab, config)
     local open = false
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Dropdown")
-    addHover(row)
+    addHover(row, self)
 
     local valueLabel = Instance.new("TextLabel")
     valueLabel.BackgroundTransparency = 1
@@ -1924,33 +2807,43 @@ function Library:_addDropdown(tab, config)
         end
     end
 
-    for i, opt in ipairs(options) do
-        local optBtn = Instance.new("TextButton")
-        optBtn.Size = UDim2.new(1, 0, 0, 32)
-        optBtn.BackgroundColor3 = BG_ITEM
-        optBtn.AutoButtonColor = false
-        optBtn.BorderSizePixel = 0
-        optBtn.Font = Enum.Font.GothamMedium
-        optBtn.Text = "   " .. tostring(opt)
-        optBtn.TextColor3 = TEXT_COLOR
-        optBtn.TextSize = 12
-        optBtn.TextXAlignment = Enum.TextXAlignment.Left
-        optBtn.LayoutOrder = i
-        optBtn.ZIndex = 5
-        optBtn.Parent = holder
-        createCorner(optBtn, 8)
+    local function buildOptions(newOptions)
+        options = newOptions
+        for _, data in ipairs(optionButtons) do data.Btn:Destroy() end
+        optionButtons = {}
+        for i, opt in ipairs(options) do
+            local optBtn = Instance.new("TextButton")
+            optBtn.Size = UDim2.new(1, 0, 0, 32)
+            optBtn.BackgroundColor3 = BG_ITEM
+            optBtn.AutoButtonColor = false
+            optBtn.BorderSizePixel = 0
+            optBtn.Font = Enum.Font.GothamMedium
+            optBtn.Text = "   " .. tostring(opt)
+            optBtn.TextColor3 = TEXT_COLOR
+            optBtn.TextSize = 12
+            optBtn.TextXAlignment = Enum.TextXAlignment.Left
+            optBtn.LayoutOrder = i
+            optBtn.ZIndex = 5
+            optBtn.Parent = holder
+            createCorner(optBtn, 8)
 
-        optBtn.MouseButton1Click:Connect(function()
-            current = opt
-            updateOptionVisuals()
-            setOpen(false)
-            self:SetFlag(flag, current)
-            if config.Callback then config.Callback(current) end
-        end)
+            optBtn.MouseButton1Click:Connect(function()
+                self:_play("Click")
+                current = opt
+                updateOptionVisuals()
+                setOpen(false)
+                self:SetFlag(flag, current)
+                if config.Callback then config.Callback(current) end
+            end)
 
-        table.insert(optionButtons, { Name = opt, Btn = optBtn })
+            table.insert(optionButtons, { Name = opt, Btn = optBtn })
+        end
+        if current == nil or not table.find(options, current) then
+            current = options[1]
+        end
+        updateOptionVisuals()
     end
-    updateOptionVisuals()
+    buildOptions(options)
 
     row.MouseButton1Click:Connect(function() setOpen(not open) end)
 
@@ -1967,9 +2860,19 @@ function Library:_addDropdown(tab, config)
             self:SetFlag(flag, current)
             if config.Callback then config.Callback(current) end
         end,
+        SetOptions = function(newOptions) buildOptions(newOptions) end,
         UpdateTheme = updateOptionVisuals,
     }
+    local hk = self:_attachHotkey(row, config.Hotkey, -226, function()
+        if #options == 0 then return end
+        local idx = table.find(options, current) or 0
+        obj.Set(options[idx % #options + 1])
+        self:_play("Click")
+    end)
+    obj.SetHotkey = hk.Set
+    obj.GetHotkey = hk.Get
     table.insert(self.Elements, { Type = "Dropdown", Instance = row, UpdateTheme = updateOptionVisuals })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -1987,7 +2890,7 @@ function Library:_addMultiDropdown(tab, config)
     local open = false
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "MultiDropdown")
-    addHover(row)
+    addHover(row, self)
 
     local valueLabel = Instance.new("TextLabel")
     valueLabel.BackgroundTransparency = 1
@@ -2079,6 +2982,7 @@ function Library:_addMultiDropdown(tab, config)
         createCorner(optBtn, 8)
 
         optBtn.MouseButton1Click:Connect(function()
+            self:_play("Click")
             selected[opt] = not selected[opt] or nil
             update()
             self:SetFlag(flag, getList())
@@ -2108,6 +3012,7 @@ function Library:_addMultiDropdown(tab, config)
         UpdateTheme = update,
     }
     table.insert(self.Elements, { Type = "MultiDropdown", Instance = row, UpdateTheme = update })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -2163,6 +3068,7 @@ function Library:_addInput(tab, config)
         Set = function(v) box.Text = tostring(v) end,
     }
     table.insert(self.Elements, { Type = "Input", Instance = row })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -2231,6 +3137,7 @@ function Library:_addTextBox(tab, config)
         Set = function(v) box.Text = tostring(v) end,
     }
     table.insert(self.Elements, { Type = "TextBox", Instance = wrap })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -2334,7 +3241,7 @@ function Library:_addSection(tab, config)
     label.Position = UDim2.new(0, 14, 0, 0)
     label.Size = UDim2.new(1, -14, 1, -2)
     label.Font = Enum.Font.GothamBold
-    label.Text = (config.Text or "Section"):upper()
+    label.Text = upperText(config.Text or "Section")
     label.TextColor3 = SUBTEXT
     label.TextSize = 11
     label.TextXAlignment = Enum.TextXAlignment.Left
@@ -2355,6 +3262,7 @@ function Library:_addSection(tab, config)
     })
     lineGrad.Parent = line
 
+    self._sections[wrap] = true
     local function updateTheme()
         dot.BackgroundColor3 = THEMES[currentThemeKey].Accent
         line.BackgroundColor3 = THEMES[currentThemeKey].Accent
@@ -2384,7 +3292,7 @@ function Library:_addKeybind(tab, config)
     local listening = false
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Keybind")
-    addHover(row)
+    addHover(row, self)
 
     local keyBadge = Instance.new("TextButton")
     keyBadge.Size = UDim2.new(0, 84, 0, 26)
@@ -2400,6 +3308,7 @@ function Library:_addKeybind(tab, config)
     createCorner(keyBadge, 8)
 
     local badgeStroke = Instance.new("UIStroke")
+    badgeStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     badgeStroke.Color = THEMES[currentThemeKey].Accent
     badgeStroke.Transparency = 1
     badgeStroke.Thickness = 1.5
@@ -2448,6 +3357,7 @@ function Library:_addKeybind(tab, config)
         UpdateTheme = refresh,
     }
     table.insert(self.Elements, { Type = "Keybind", Instance = row, UpdateTheme = refresh })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -2614,7 +3524,7 @@ function Library:_addStepper(tab, config)
     else value = config.CurrentValue or min end
 
     local row = makeRowBase(tab.Content, config.Order, 40)
-    addHover(row)
+    addHover(row, self)
 
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
@@ -2671,12 +3581,14 @@ function Library:_addStepper(tab, config)
     end
 
     minus.MouseButton1Click:Connect(function()
+        self:_play("Click")
         value = math.max(min, value - step)
         update()
         self:SetFlag(flag, value)
         if config.Callback then config.Callback(value) end
     end)
     plus.MouseButton1Click:Connect(function()
+        self:_play("Click")
         value = math.min(max, value + step)
         update()
         self:SetFlag(flag, value)
@@ -2698,6 +3610,7 @@ function Library:_addStepper(tab, config)
         end,
     }
     table.insert(self.Elements, { Type = "Stepper", Instance = row, UpdateTheme = update })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -2767,6 +3680,7 @@ function Library:_addRadioGroup(tab, config)
         createCorner(btn, 8)
 
         btn.MouseButton1Click:Connect(function()
+            self:_play("Click")
             current = opt
             update()
             self:SetFlag(flag, current)
@@ -2792,6 +3706,7 @@ function Library:_addRadioGroup(tab, config)
         UpdateTheme = update,
     }
     table.insert(self.Elements, { Type = "RadioGroup", Instance = wrap, UpdateTheme = update })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -2907,7 +3822,7 @@ function Library:_addColorPicker(tab, config)
 
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Color")
-    addHover(row)
+    addHover(row, self)
 
     local preview = Instance.new("Frame")
     preview.Size = UDim2.new(0, 22, 0, 22)
@@ -3205,6 +4120,7 @@ function Library:_addColorPicker(tab, config)
         end,
     }
     table.insert(self.Elements, { Type = "ColorPicker", Instance = row })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
     return obj
 end
 
@@ -3324,6 +4240,7 @@ function Library:_applyThemeVisuals()
     for _, p in ipairs(self._particles or {}) do
         p.frame.BackgroundColor3 = theme.Accent
     end
+    if self.SearchStroke then self.SearchStroke.Color = theme.Accent end
     -- индикаторы и подписи вкладок остаются белыми на акцентном фоне
 end
 
@@ -3830,7 +4747,7 @@ function Library:Notify(config)
     notify.Position = UDim2.new(1, 300, 0, 20 + (#self._activeNotifies - 1) * 78)
     reflow()
 
-    if config.Sound ~= false then playSound(kind) end
+    if config.Sound ~= false then self:_play("Notify") end
 
     task.delay(config.Duration or 5, function()
         local t = TweenService:Create(notify, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {

@@ -4,6 +4,7 @@
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 local TweenService     = game:GetService("TweenService")
+local _RealTweenService = TweenService
 local UserInputService = game:GetService("UserInputService")
 local Lighting         = game:GetService("Lighting")
 local SoundService     = game:GetService("SoundService")
@@ -11,6 +12,34 @@ local GuiService       = game:GetService("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Доступность: единый множитель длительности всех анимаций.
+-- Library:SetAccessibility({ ReduceMotion = true }) ставит масштаб в 0, поэтому
+-- интерфейс не анимируется, но остаётся полностью рабочим. Обёртка сохраняет
+-- прежний синтаксис TweenService:Create(...) во всём файле.
+local TWEEN_SCALE = 1
+local function scaledTweenInfo(info)
+    if TWEEN_SCALE == 1 then return info end
+    if typeof(info) ~= "TweenInfo" then return info end
+    return TweenInfo.new(
+        (tonumber(info.Time) or 0) * TWEEN_SCALE,
+        info.EasingStyle,
+        info.EasingDirection,
+        info.RepeatCount,
+        info.Reverses,
+        info.DelayTime
+    )
+end
+TweenService = setmetatable({}, {
+    __index = function(_, key)
+        if key == "Create" then
+            return function(_, target, info, props)
+                return _RealTweenService:Create(target, scaledTweenInfo(info), props)
+            end
+        end
+        return function(_, ...) return _RealTweenService[key](_RealTweenService, ...) end
+    end,
+})
 
 local BRAND = "HIros"
 
@@ -1784,6 +1813,8 @@ function Library:_attachCreators(tab)
     tab.CreateLoader = function(_, cfg) return self:_addLoader(tab, withOrder(tab, cfg)) end
     tab.CreateAccordion = function(_, cfg) return self:_addAccordion(tab, withOrder(tab, cfg)) end
     tab.CreateChart = function(_, cfg) return self:_addChart(tab, withOrder(tab, cfg)) end
+    tab.CreateTable = function(_, cfg) return self:_addTable(tab, withOrder(tab, cfg)) end
+    tab.CreateIconPicker = function(_, cfg) return self:_addIconPicker(tab, withOrder(tab, cfg)) end
 end
 
 -- ============================================================
@@ -2133,6 +2164,1179 @@ function Library:_addChart(tab, config)
                 task.wait(interval)
             end
         end)
+    end
+    return obj
+end
+
+-- ============================================================
+-- SORTABLE TABLE
+-- ============================================================
+-- local tableView = tab:CreateTable({
+--     Name = "Игроки",
+--     Columns = { { Key = "Name", Name = "Игрок" }, { Key = "Score", Name = "Очки" } },
+--     Rows = { { Name = "Alex", Score = 12 }, { Name = "Mira", Score = 24 } },
+--     Height = 150,
+-- })
+-- Columns — список ключей или { Key, Name/Label, Width/Weight (относительный вес), Format, Sortable }.
+-- Rows (или Data) — массив записей; Callback(row, displayIndex, selectedRows), Height — высота прокрутки.
+-- Есть поиск, MultiSelect, Actions, EmptyText; GetVisible и GetSelectedRows возвращают видимые/выбранные строки.
+-- Клик по заголовку меняет сортировку; методы: Get, Set, AddRow, Clear, Sort, GetSort, GetSelected.
+function Library:_addTable(tab, config)
+    local self = self
+    local sourceRows = type(config.Rows) == "table" and config.Rows or (type(config.Data) == "table" and config.Data or {})
+    local sourceColumns = type(config.Columns) == "table" and config.Columns or {}
+    local columns = {}
+
+    for i, source in ipairs(sourceColumns) do
+        local raw = type(source) == "table" and source or {}
+        local key
+        local label
+        if type(source) == "string" then
+            key = source
+            label = source
+        else
+            key = raw.Key or raw.Field or raw.Id or raw.Name or raw.Title or ("Column" .. i)
+            label = raw.Label or raw.Title or raw.Name or tostring(key)
+        end
+        local weight = tonumber(raw.Width or raw.Weight)
+        if not weight or weight <= 0 then weight = 1 end
+        columns[#columns + 1] = {
+            Key = key,
+            Label = tostring(label),
+            Weight = weight,
+            Sortable = config.Sortable ~= false and raw.Sortable ~= false,
+            Format = raw.Format,
+        }
+    end
+
+    -- При отсутствии Columns выводим поля первой строки в детерминированном порядке.
+    if #columns == 0 then
+        local first = sourceRows[1]
+        local keys = {}
+        if type(first) == "table" then
+            for key in pairs(first) do keys[#keys + 1] = key end
+            table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+        end
+        if #keys == 0 then keys[1] = "Value" end
+        for i, key in ipairs(keys) do
+            columns[#columns + 1] = {
+                Key = key,
+                Label = (key == "Value") and (config.ValueLabel or "Значение") or tostring(key),
+                Weight = 1,
+                Sortable = config.Sortable ~= false,
+            }
+        end
+    end
+
+    local totalWeight = 0
+    for _, column in ipairs(columns) do totalWeight = totalWeight + column.Weight end
+    if totalWeight <= 0 then totalWeight = #columns end
+
+    local bodyHeight = math.clamp(math.floor(tonumber(config.Height) or 160), 60, 260)
+    local hasTitle = config.Name ~= nil and tostring(config.Name) ~= ""
+    local searchable = config.Searchable ~= false
+    local headerTop = hasTitle and 30 or (searchable and 34 or 8)
+    local headerHeight = 30
+    local rowHeight = math.clamp(math.floor(tonumber(config.RowHeight) or 28), 22, 44)
+    local actions = {}
+    for _, source in ipairs(type(config.Actions) == "table" and config.Actions or {}) do
+        if type(source) == "function" then
+            actions[#actions + 1] = { Name = "Action", Callback = source }
+        elseif type(source) == "string" then
+            actions[#actions + 1] = { Name = source, Text = source }
+        elseif type(source) == "table" then
+            actions[#actions + 1] = source
+        end
+    end
+    local actionWidth = (#actions > 0) and (#actions * 28 + 4) or 0
+
+    local card = Instance.new("Frame")
+    card.Name = tostring(config.Name or "Table")
+    card.BackgroundColor3 = BG_ITEM
+    card.BorderSizePixel = 0
+    card.Size = UDim2.new(1, 0, 0, headerTop + headerHeight + bodyHeight + 14)
+    card.LayoutOrder = config.Order or 0
+    card.ZIndex = 4
+    card.Parent = tab.Content
+    createCorner(card, 10)
+    self:_attachTooltip(card, config.Tooltip)
+
+    if hasTitle then
+        local title = Instance.new("TextLabel")
+        title.BackgroundTransparency = 1
+        title.Position = UDim2.new(0, 12, 0, 6)
+        title.Size = UDim2.new(1, searchable and -176 or -24, 0, 18)
+        title.Font = Enum.Font.GothamBold
+        title.Text = tostring(config.Name)
+        title.TextColor3 = TEXT_COLOR
+        title.TextSize = 13
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.TextTruncate = Enum.TextTruncate.AtEnd
+        title.ZIndex = 5
+        title.Parent = card
+    end
+
+    local filterBox
+    if searchable then
+        filterBox = Instance.new("TextBox")
+        filterBox.Name = "TableFilter"
+        filterBox.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+        filterBox.BorderSizePixel = 0
+        filterBox.Position = hasTitle and UDim2.new(1, -168, 0, 4) or UDim2.new(0, 8, 0, 4)
+        filterBox.Size = hasTitle and UDim2.new(0, 160, 0, 22) or UDim2.new(1, -16, 0, 24)
+        filterBox.Font = Enum.Font.Gotham
+        filterBox.PlaceholderText = config.SearchPlaceholder or "🔎 Фильтр строк..."
+        filterBox.PlaceholderColor3 = SUBTEXT
+        filterBox.Text = ""
+        filterBox.TextColor3 = TEXT_COLOR
+        filterBox.TextSize = 11
+        filterBox.ClearTextOnFocus = false
+        filterBox.ZIndex = 6
+        filterBox.Parent = card
+        createCorner(filterBox, 7)
+    end
+
+    local header = Instance.new("Frame")
+    header.BackgroundColor3 = BG_HOVER
+    header.BorderSizePixel = 0
+    header.Position = UDim2.new(0, 8, 0, headerTop)
+    header.Size = UDim2.new(1, -16, 0, headerHeight)
+    header.ZIndex = 5
+    header.Parent = card
+    createCorner(header, 7)
+
+    local body = Instance.new("ScrollingFrame")
+    body.BackgroundTransparency = 1
+    body.BorderSizePixel = 0
+    body.Position = UDim2.new(0, 8, 0, headerTop + headerHeight + 4)
+    body.Size = UDim2.new(1, -16, 0, bodyHeight)
+    body.CanvasSize = UDim2.new(0, 0, 0, 0)
+    body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    body.ScrollBarThickness = 3
+    body.ScrollBarImageColor3 = THEMES[currentThemeKey].Accent
+    body.ZIndex = 5
+    body.Parent = card
+
+    local bodyLayout = Instance.new("UIListLayout")
+    bodyLayout.Padding = UDim.new(0, 2)
+    bodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    bodyLayout.Parent = body
+
+    local emptyLabel = Instance.new("TextLabel")
+    emptyLabel.Name = "TableEmptyState"
+    emptyLabel.BackgroundTransparency = 1
+    emptyLabel.Position = body.Position
+    emptyLabel.Size = body.Size
+    emptyLabel.Font = Enum.Font.GothamMedium
+    emptyLabel.Text = config.EmptyText or "Нет записей"
+    emptyLabel.TextColor3 = SUBTEXT
+    emptyLabel.TextSize = 12
+    emptyLabel.TextWrapped = true
+    emptyLabel.Visible = false
+    emptyLabel.ZIndex = 8
+    emptyLabel.Parent = card
+
+    local sortKey = nil
+    local sortAscending = config.SortDescending ~= true
+    local selectedIds = {}
+    local nextRowId = 0
+    local entries = {}
+    local renderedRows = {}
+    local headerButtons = {}
+
+    local function getColumn(key)
+        for _, column in ipairs(columns) do
+            if column.Key == key then return column end
+        end
+        return nil
+    end
+
+    if config.SortBy ~= nil then
+        local initial = getColumn(config.SortBy)
+        if initial and initial.Sortable then sortKey = initial.Key end
+    end
+
+    local function readValue(row, key)
+        if type(row) == "table" then
+            if key == "Value" and row[key] == nil then return row end
+            return row[key]
+        end
+        if key == "Value" then return row end
+        return nil
+    end
+
+    local function compareValues(a, b)
+        if a == b then return 0 end
+        if a == nil then return 1 end -- nil values stay at the end in either direction
+        if b == nil then return -1 end
+        if type(a) == "number" and type(b) == "number" then
+            if a < b then return -1 end
+            if a > b then return 1 end
+            return 0
+        end
+        if type(a) == "boolean" and type(b) == "boolean" then
+            return a and 1 or -1
+        end
+        local sa, sb = lowerText(tostring(a)), lowerText(tostring(b))
+        if sa < sb then return -1 end
+        if sa > sb then return 1 end
+        return 0
+    end
+
+    local function sortedEntries()
+        local out = {}
+        for _, entry in ipairs(entries) do out[#out + 1] = entry end
+        if sortKey then
+            table.sort(out, function(a, b)
+                local av = readValue(a.Data, sortKey)
+                local bv = readValue(b.Data, sortKey)
+                local cmp = compareValues(av, bv)
+                if cmp == 0 then return a.Id < b.Id end
+                if av == nil or bv == nil then return cmp < 0 end
+                if sortAscending then return cmp < 0 end
+                return cmp > 0
+            end)
+        end
+        return out
+    end
+
+    local function filteredEntries()
+        local query = filterBox and lowerText(filterBox.Text or "") or ""
+        local sorted = sortedEntries()
+        if query == "" then return sorted end
+        local out = {}
+        for _, entry in ipairs(sorted) do
+            local matched = false
+            for _, column in ipairs(columns) do
+                if lowerText(column.Label):find(query, 1, true) then
+                    matched = true
+                    break
+                end
+                local value = readValue(entry.Data, column.Key)
+                if value ~= nil and lowerText(tostring(value)):find(query, 1, true) then
+                    matched = true
+                    break
+                end
+            end
+            if matched then out[#out + 1] = entry end
+        end
+        return out
+    end
+
+    local function updateHeaderTexts()
+        for _, column in ipairs(columns) do
+            local button = headerButtons[column]
+            if button then
+                local marker = ""
+                if column.Key == sortKey then
+                    marker = sortAscending and "  ▲" or "  ▼"
+                    button.TextColor3 = THEMES[currentThemeKey].Accent
+                else
+                    button.TextColor3 = TEXT_COLOR
+                end
+                button.Text = column.Label .. marker
+            end
+        end
+    end
+
+    local function getSelectedRows()
+        local out = {}
+        for _, entry in ipairs(sortedEntries()) do
+            if selectedIds[entry.Id] then out[#out + 1] = entry.Data end
+        end
+        return out
+    end
+
+    local function renderRows()
+        for _, record in ipairs(renderedRows) do
+            if record.Instance then record.Instance:Destroy() end
+        end
+        renderedRows = {}
+
+        local visible = filteredEntries()
+        for displayIndex, entry in ipairs(visible) do
+            local isSelected = selectedIds[entry.Id] == true
+            local baseColor = (displayIndex % 2 == 0) and Color3.fromRGB(39, 39, 46) or BG_ITEM
+            local row = Instance.new("TextButton")
+            row.Name = "TableRow"
+            row.BackgroundColor3 = isSelected and THEMES[currentThemeKey].Accent or baseColor
+            row.BackgroundTransparency = isSelected and 0.15 or 0
+            row.BorderSizePixel = 0
+            row.AutoButtonColor = false
+            row.Text = ""
+            row.Size = UDim2.new(1, 0, 0, rowHeight)
+            row.LayoutOrder = displayIndex
+            row.ZIndex = 6
+            row.Parent = body
+            createCorner(row, 5)
+
+            for columnIndex, column in ipairs(columns) do
+                local startScale = 0
+                for j = 1, columnIndex - 1 do
+                    startScale = startScale + columns[j].Weight / totalWeight
+                end
+                local widthScale = column.Weight / totalWeight
+                local cell = Instance.new("TextLabel")
+                cell.BackgroundTransparency = 1
+                cell.Position = UDim2.new(startScale, 5, 0, 0)
+                local reserve = (columnIndex == #columns) and actionWidth or 0
+                cell.Size = UDim2.new(widthScale, -10 - reserve, 1, 0)
+                cell.Font = Enum.Font.Gotham
+                local value = readValue(entry.Data, column.Key)
+                if type(column.Format) == "function" then
+                    local ok, formatted = pcall(column.Format, value, entry.Data, displayIndex)
+                    if ok then value = formatted end
+                end
+                cell.Text = value == nil and "—" or tostring(value)
+                cell.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or TEXT_COLOR
+                cell.TextSize = 11
+                cell.TextXAlignment = Enum.TextXAlignment.Left
+                cell.TextTruncate = Enum.TextTruncate.AtEnd
+                cell.ZIndex = 7
+                cell.Parent = row
+            end
+
+            local actionButtons = {}
+            for actionIndex, action in ipairs(actions) do
+                local button = Instance.new("TextButton")
+                button.Name = "TableAction_" .. actionIndex
+                button.BackgroundColor3 = BG_HOVER
+                button.BorderSizePixel = 0
+                button.AutoButtonColor = false
+                button.Position = UDim2.new(1, -actionWidth + (actionIndex - 1) * 28, 0.5, -11)
+                button.Size = UDim2.new(0, 24, 0, 22)
+                button.Font = Enum.Font.GothamBold
+                button.Text = tostring(action.Icon or action.Text or action.Name or "•")
+                button.TextColor3 = THEMES[currentThemeKey].Accent
+                button.TextSize = 11
+                button.ZIndex = 8
+                button.Parent = row
+                createCorner(button, 6)
+                self:_attachTooltip(button, action.Tooltip or action.Name)
+                button.MouseButton1Click:Connect(function()
+                    local callback = action.Callback or action.OnClick
+                    if type(callback) == "function" then callback(entry.Data, displayIndex) end
+                end)
+                actionButtons[#actionButtons + 1] = button
+            end
+
+            renderedRows[#renderedRows + 1] = {
+                Id = entry.Id,
+                Instance = row,
+                BaseColor = baseColor,
+                ActionButtons = actionButtons,
+            }
+            row.MouseButton1Click:Connect(function()
+                if config.Selectable ~= false then
+                    if config.MultiSelect then
+                        if selectedIds[entry.Id] then selectedIds[entry.Id] = nil
+                        else selectedIds[entry.Id] = true end
+                    elseif selectedIds[entry.Id] and config.AllowDeselect then
+                        selectedIds = {}
+                    else
+                        selectedIds = { [entry.Id] = true }
+                    end
+                    for _, record in ipairs(renderedRows) do
+                        local selected = selectedIds[record.Id] == true
+                        record.Instance.BackgroundColor3 = selected and THEMES[currentThemeKey].Accent or record.BaseColor
+                        record.Instance.BackgroundTransparency = selected and 0.15 or 0
+                        for _, child in ipairs(record.Instance:GetChildren()) do
+                            if child:IsA("TextLabel") then
+                                child.TextColor3 = selected and Color3.fromRGB(255, 255, 255) or TEXT_COLOR
+                            end
+                        end
+                    end
+                end
+                if type(config.Callback) == "function" then
+                    config.Callback(entry.Data, displayIndex, getSelectedRows())
+                end
+            end)
+        end
+
+        emptyLabel.Visible = #visible == 0
+        if #entries == 0 then
+            emptyLabel.Text = config.EmptyText or "Нет записей"
+        else
+            emptyLabel.Text = config.NoResultsText or "Ничего не найдено"
+        end
+    end
+
+    local function replaceRows(newRows)
+        entries = {}
+        selectedIds = {}
+        nextRowId = 0
+        if type(newRows) == "table" then
+            for _, row in ipairs(newRows) do
+                nextRowId = nextRowId + 1
+                entries[#entries + 1] = { Id = nextRowId, Data = row }
+            end
+        end
+        renderRows()
+    end
+
+    local function changeSort(key, ascending)
+        local column = getColumn(key)
+        if not column or not column.Sortable then return false end
+        if ascending == nil then
+            if sortKey == key then sortAscending = not sortAscending
+            else sortAscending = true end
+        else
+            sortAscending = ascending and true or false
+        end
+        sortKey = key
+        updateHeaderTexts()
+        renderRows()
+        return true
+    end
+
+    for columnIndex, column in ipairs(columns) do
+        local startScale = 0
+        for j = 1, columnIndex - 1 do
+            startScale = startScale + columns[j].Weight / totalWeight
+        end
+        local button = Instance.new("TextButton")
+        button.BackgroundTransparency = 1
+        button.BorderSizePixel = 0
+        button.AutoButtonColor = false
+        button.Position = UDim2.new(startScale, 5, 0, 0)
+        button.Size = UDim2.new(column.Weight / totalWeight, -10, 1, 0)
+        button.Font = Enum.Font.GothamBold
+        button.Text = column.Label
+        button.TextColor3 = TEXT_COLOR
+        button.TextSize = 11
+        button.TextXAlignment = Enum.TextXAlignment.Left
+        button.TextTruncate = Enum.TextTruncate.AtEnd
+        button.ZIndex = 6
+        button.Parent = header
+        headerButtons[column] = button
+        if column.Sortable then
+            button.MouseButton1Click:Connect(function()
+                changeSort(column.Key, nil)
+            end)
+        end
+    end
+
+    if filterBox then
+        filterBox:GetPropertyChangedSignal("Text"):Connect(function() renderRows() end)
+    end
+
+    local initialRows = {}
+    for _, row in ipairs(sourceRows) do initialRows[#initialRows + 1] = row end
+    replaceRows(initialRows)
+    updateHeaderTexts()
+
+    local obj = { Instance = card }
+    obj.Get = function()
+        local out = {}
+        for _, entry in ipairs(sortedEntries()) do out[#out + 1] = entry.Data end
+        return out
+    end
+    obj.Set = function(first, second)
+        replaceRows(first == obj and second or first)
+        return obj
+    end
+    obj.AddRow = function(first, second)
+        local row
+        if first == obj then row = second else row = first end
+        if row == nil then return false end
+        nextRowId = nextRowId + 1
+        entries[#entries + 1] = { Id = nextRowId, Data = row }
+        renderRows()
+        return true
+    end
+    obj.Clear = function()
+        replaceRows({})
+        return obj
+    end
+    obj.Sort = function(first, second, third)
+        local key, ascending
+        if first == obj then key, ascending = second, third
+        else key, ascending = first, second end
+        return changeSort(key, ascending)
+    end
+    obj.Filter = function(first, second)
+        if not filterBox then return false end
+        local value
+        if first == obj then value = second else value = first end
+        filterBox.Text = tostring(value or "")
+        renderRows()
+        return true
+    end
+    obj.GetFilter = function()
+        return filterBox and filterBox.Text or ""
+    end
+    obj.GetVisible = function()
+        local out = {}
+        for _, entry in ipairs(filteredEntries()) do out[#out + 1] = entry.Data end
+        return out
+    end
+    obj.GetSort = function()
+        return sortKey, sortAscending
+    end
+    obj.GetSelectedRows = getSelectedRows
+    obj.GetSelected = function()
+        local selected = getSelectedRows()
+        if config.MultiSelect then return selected end
+        return selected[1]
+    end
+    obj.UpdateTheme = function()
+        body.ScrollBarImageColor3 = THEMES[currentThemeKey].Accent
+        if filterBox then filterBox.PlaceholderColor3 = SUBTEXT end
+        emptyLabel.TextColor3 = SUBTEXT
+        updateHeaderTexts()
+        for _, record in ipairs(renderedRows) do
+            local selected = selectedIds[record.Id] == true
+            record.Instance.BackgroundColor3 = selected and THEMES[currentThemeKey].Accent or record.BaseColor
+            for _, child in ipairs(record.Instance:GetChildren()) do
+                if child:IsA("TextLabel") then
+                    child.TextColor3 = selected and Color3.fromRGB(255, 255, 255) or TEXT_COLOR
+                elseif child:IsA("TextButton") then
+                    child.TextColor3 = THEMES[currentThemeKey].Accent
+                end
+            end
+        end
+    end
+    table.insert(self.Elements, { Type = "Table", Instance = card, UpdateTheme = obj.UpdateTheme })
+    return obj
+end
+
+-- ============================================================
+-- ICON / IMAGE PICKER
+-- ============================================================
+-- local icon = tab:CreateIconPicker({
+--     Name = "Иконка", Items = { "⚡", "🌙", { Name = "Лого", Image = "rbxassetid://123456" } },
+--     Flag = "selected_icon", Callback = function(value, item) end,
+-- })
+-- Picker accepts emoji, rbxassetid:// IDs, numeric asset IDs and http(s) image URLs.
+function Library:_addIconPicker(tab, config)
+    local self = self
+    local defaultItems = { "⚡", "🔥", "⭐", "🌙", "💎", "🎮", "🛡️", "🚀", "❤️", "🔒", "👑", "🎯", "🌈", "☀️", "🌀", "🎵", "🧊", "🪄" }
+
+    local function normalizeValue(value)
+        if type(value) == "number" then value = tostring(value) end
+        if type(value) ~= "string" then return nil end
+        value = value:gsub("^%s+", ""):gsub("%s+$", "")
+        if value == "" then return nil end
+        if value:match("^%d+$") then return "rbxassetid://" .. value end
+        return value
+    end
+
+    local function normalizeImage(value)
+        value = normalizeValue(value)
+        if not value then return nil end
+        if value:match("^rbxassetid://%d+$") or value:match("^https?://%S+$") then return value end
+        return nil
+    end
+
+    local function normalizeItem(raw)
+        local sourceValue, rawName, rawIcon, rawImage, searchText
+        if type(raw) == "table" then
+            sourceValue = raw.Value or raw.Id or raw.Image or raw.ImageId or raw.Icon or raw.Name
+            rawName = raw.Name or raw.Label
+            rawIcon = raw.Icon
+            rawImage = raw.Image or raw.ImageId
+            searchText = raw.Search
+        elseif type(raw) == "string" or type(raw) == "number" then
+            sourceValue = raw
+            rawName = tostring(raw)
+        else
+            return nil
+        end
+        local value = normalizeValue(sourceValue)
+        if not value then return nil end
+        local image = normalizeImage(rawImage) or normalizeImage(value)
+        local icon = image and nil or (type(rawIcon) == "string" and rawIcon or value)
+        return {
+            Value = value,
+            Name = tostring(rawName or sourceValue),
+            Image = image,
+            Icon = icon,
+            Search = tostring(searchText or ""),
+            Favorite = type(raw) == "table" and raw.Favorite == true,
+            Raw = raw,
+        }
+    end
+
+    local items, byValue = {}, {}
+    local favoriteValues, favoriteMap = {}, {}
+    local recentValues, recentMap = {}, {}
+    local flag = config.Flag
+    local favoritesFlag = config.FavoritesFlag or (flag and (flag .. "_favorites"))
+    local recentFlag = config.RecentFlag or (flag and (flag .. "_recent"))
+    local maxRecent = math.clamp(math.floor(tonumber(config.MaxRecent) or 8), 1, 20)
+
+    local function addItem(raw)
+        local item = normalizeItem(raw)
+        if not item then return nil end
+        local existing = byValue[item.Value]
+        if existing then return existing end
+        items[#items + 1] = item
+        byValue[item.Value] = item
+        return item
+    end
+
+    local function itemValue(value)
+        if type(value) == "table" then
+            value = value.Value or value.Id or value.Image or value.ImageId or value.Icon or value.Name
+        end
+        return normalizeValue(value)
+    end
+
+    local function addFavorite(value)
+        local key = itemValue(value)
+        if key and not favoriteMap[key] then
+            favoriteMap[key] = true
+            favoriteValues[#favoriteValues + 1] = key
+        end
+    end
+
+    local function removeFavorite(value)
+        favoriteMap[value] = nil
+        for i = #favoriteValues, 1, -1 do
+            if favoriteValues[i] == value then table.remove(favoriteValues, i) end
+        end
+    end
+
+    local function addRecent(value)
+        local key = itemValue(value)
+        if not key then return end
+        recentMap[key] = true
+        for i = #recentValues, 1, -1 do
+            if recentValues[i] == key then table.remove(recentValues, i) end
+        end
+        table.insert(recentValues, 1, key)
+        while #recentValues > maxRecent do
+            recentMap[table.remove(recentValues)] = nil
+        end
+    end
+
+    local function readStoredValues(source)
+        local values = {}
+        if type(source) ~= "table" then return values end
+        for _, value in ipairs(source) do values[#values + 1] = value end
+        if #values == 0 then
+            local indexed = {}
+            for key, value in pairs(source) do
+                local index = tonumber(key)
+                if index and type(value) == "string" then indexed[#indexed + 1] = { Index = index, Value = value } end
+            end
+            table.sort(indexed, function(a, b) return a.Index < b.Index end)
+            for _, entry in ipairs(indexed) do values[#values + 1] = entry.Value end
+        end
+        return values
+    end
+
+    local sourceItems = type(config.Items) == "table" and config.Items or defaultItems
+    for _, raw in ipairs(sourceItems) do
+        local item = addItem(raw)
+        if item and item.Favorite then addFavorite(item.Value) end
+    end
+
+    local savedFavorites = favoritesFlag and type(self.Flags[favoritesFlag]) == "table" and self.Flags[favoritesFlag] or config.Favorites
+    for _, value in ipairs(readStoredValues(savedFavorites)) do addFavorite(value) end
+    for _, value in ipairs(favoriteValues) do
+        if not byValue[value] then addItem(value) end
+    end
+
+    local savedRecent = recentFlag and type(self.Flags[recentFlag]) == "table" and self.Flags[recentFlag] or config.Recent
+    local savedRecentValues = readStoredValues(savedRecent)
+    for i = #savedRecentValues, 1, -1 do addRecent(savedRecentValues[i]) end
+    for _, value in ipairs(recentValues) do
+        if not byValue[value] then addItem(value) end
+    end
+
+    local storedValue = flag and self.Flags[flag] or nil
+    local selectedValue = normalizeValue(storedValue) or normalizeValue(config.CurrentValue) or normalizeValue(config.DefaultValue)
+    local selectedItem = selectedValue and byValue[selectedValue] or nil
+    if selectedValue and not selectedItem then selectedItem = addItem(selectedValue) end
+    if not selectedValue and config.AutoSelectFirst ~= false and items[1] then
+        selectedItem = items[1]
+        selectedValue = selectedItem.Value
+    end
+
+    local gridHeight = math.clamp(math.floor(tonumber(config.Height) or 132), 72, 220)
+    local card = Instance.new("Frame")
+    card.Name = tostring(config.Name or "IconPicker")
+    card.BackgroundColor3 = BG_ITEM
+    card.BorderSizePixel = 0
+    card.Size = UDim2.new(1, 0, 0, 154 + gridHeight)
+    card.LayoutOrder = config.Order or 0
+    card.ZIndex = 4
+    card.Parent = tab.Content
+    createCorner(card, 10)
+    self:_attachTooltip(card, config.Tooltip)
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Position = UDim2.new(0, 12, 0, 6)
+    title.Size = UDim2.new(1, -86, 0, 18)
+    title.Font = Enum.Font.GothamBold
+    title.Text = tostring(config.Name or "Выбор иконки")
+    title.TextColor3 = TEXT_COLOR
+    title.TextSize = 13
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.TextTruncate = Enum.TextTruncate.AtEnd
+    title.ZIndex = 5
+    title.Parent = card
+
+    local previewFrame = Instance.new("Frame")
+    previewFrame.Name = "IconPreview"
+    previewFrame.BackgroundColor3 = BG_HOVER
+    previewFrame.BorderSizePixel = 0
+    previewFrame.Position = UDim2.new(1, -58, 0, 5)
+    previewFrame.Size = UDim2.new(0, 48, 0, 48)
+    previewFrame.ZIndex = 6
+    previewFrame.Parent = card
+    createCorner(previewFrame, 9)
+
+    local previewImage = Instance.new("ImageLabel")
+    previewImage.BackgroundTransparency = 1
+    previewImage.AnchorPoint = Vector2.new(0.5, 0.5)
+    previewImage.Position = UDim2.new(0.5, 0, 0.5, 0)
+    previewImage.Size = UDim2.new(0, 34, 0, 34)
+    previewImage.ScaleType = Enum.ScaleType.Fit
+    previewImage.Visible = false
+    previewImage.ZIndex = 7
+    previewImage.Parent = previewFrame
+
+    local previewGlyph = Instance.new("TextLabel")
+    previewGlyph.BackgroundTransparency = 1
+    previewGlyph.AnchorPoint = Vector2.new(0.5, 0.5)
+    previewGlyph.Position = UDim2.new(0.5, 0, 0.5, 0)
+    previewGlyph.Size = UDim2.new(1, -4, 1, -4)
+    previewGlyph.Font = Enum.Font.GothamBold
+    previewGlyph.Text = "—"
+    previewGlyph.TextColor3 = TEXT_COLOR
+    previewGlyph.TextSize = 24
+    previewGlyph.ZIndex = 7
+    previewGlyph.Parent = previewFrame
+
+    local previewValue = Instance.new("TextLabel")
+    previewValue.BackgroundTransparency = 1
+    previewValue.Position = UDim2.new(0, 12, 0, 28)
+    previewValue.Size = UDim2.new(1, -84, 0, 18)
+    previewValue.Font = Enum.Font.Gotham
+    previewValue.Text = selectedValue or "Не выбрано"
+    previewValue.TextColor3 = SUBTEXT
+    previewValue.TextSize = 10
+    previewValue.TextXAlignment = Enum.TextXAlignment.Left
+    previewValue.TextTruncate = Enum.TextTruncate.AtEnd
+    previewValue.ZIndex = 5
+    previewValue.Parent = card
+
+    local searchBox = Instance.new("TextBox")
+    searchBox.Name = "IconSearch"
+    searchBox.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+    searchBox.BorderSizePixel = 0
+    searchBox.Position = UDim2.new(0, 8, 0, 56)
+    searchBox.Size = UDim2.new(1, -16, 0, 26)
+    searchBox.Font = Enum.Font.Gotham
+    searchBox.PlaceholderText = config.SearchPlaceholder or "🔎 Найти emoji или картинку..."
+    searchBox.PlaceholderColor3 = SUBTEXT
+    searchBox.Text = ""
+    searchBox.TextColor3 = TEXT_COLOR
+    searchBox.TextSize = 11
+    searchBox.ClearTextOnFocus = false
+    searchBox.ZIndex = 5
+    searchBox.Parent = card
+    createCorner(searchBox, 7)
+
+    local renderItems
+    local mode = "all"
+    local filterButtons = {}
+    local modeConfig = {
+        { Key = "all", Label = "Все" },
+        { Key = "favorites", Label = "★ Избранное" },
+        { Key = "recent", Label = "◷ Недавние" },
+    }
+    local function updateModes()
+        for _, entry in ipairs(filterButtons) do
+            local active = entry.Key == mode
+            entry.Button.BackgroundColor3 = active and THEMES[currentThemeKey].Accent or BG_HOVER
+            entry.Button.TextColor3 = active and Color3.fromRGB(255, 255, 255) or TEXT_COLOR
+        end
+    end
+    local function setMode(value)
+        if value ~= "all" and value ~= "favorites" and value ~= "recent" then return false end
+        mode = value
+        updateModes()
+        return true
+    end
+
+    for i, data in ipairs(modeConfig) do
+        local modeKey = data.Key
+        local button = Instance.new("TextButton")
+        button.BackgroundColor3 = BG_HOVER
+        button.BorderSizePixel = 0
+        button.AutoButtonColor = false
+        button.Position = UDim2.new((i - 1) / 3, 8, 0, 86)
+        button.Size = UDim2.new(1 / 3, -12, 0, 23)
+        button.Font = Enum.Font.GothamMedium
+        button.Text = data.Label
+        button.TextColor3 = TEXT_COLOR
+        button.TextSize = 10
+        button.ZIndex = 5
+        button.Parent = card
+        createCorner(button, 6)
+        button.MouseButton1Click:Connect(function() setMode(modeKey); renderItems() end)
+        filterButtons[#filterButtons + 1] = { Key = modeKey, Button = button }
+    end
+
+    local manualBox = Instance.new("TextBox")
+    manualBox.Name = "ImageIdInput"
+    manualBox.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+    manualBox.BorderSizePixel = 0
+    manualBox.Position = UDim2.new(0, 8, 0, 114)
+    manualBox.Size = UDim2.new(1, -82, 0, 25)
+    manualBox.Font = Enum.Font.Gotham
+    manualBox.PlaceholderText = "rbxassetid://... или https://..."
+    manualBox.PlaceholderColor3 = SUBTEXT
+    manualBox.Text = ""
+    manualBox.TextColor3 = TEXT_COLOR
+    manualBox.TextSize = 10
+    manualBox.ClearTextOnFocus = false
+    manualBox.ZIndex = 5
+    manualBox.Parent = card
+    createCorner(manualBox, 7)
+
+    local applyImage = Instance.new("TextButton")
+    applyImage.Name = "ApplyImageButton"
+    applyImage.BackgroundColor3 = THEMES[currentThemeKey].Accent
+    applyImage.BorderSizePixel = 0
+    applyImage.Position = UDim2.new(1, -68, 0, 114)
+    applyImage.Size = UDim2.new(0, 60, 0, 25)
+    applyImage.Font = Enum.Font.GothamBold
+    applyImage.Text = "Применить"
+    applyImage.TextColor3 = Color3.fromRGB(255, 255, 255)
+    applyImage.TextSize = 9
+    applyImage.ZIndex = 5
+    applyImage.Parent = card
+    createCorner(applyImage, 7)
+
+    local grid = Instance.new("ScrollingFrame")
+    grid.Name = "IconGrid"
+    grid.BackgroundTransparency = 1
+    grid.BorderSizePixel = 0
+    grid.Position = UDim2.new(0, 8, 0, 146)
+    grid.Size = UDim2.new(1, -16, 0, gridHeight)
+    grid.CanvasSize = UDim2.new(0, 0, 0, 0)
+    grid.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    grid.ScrollBarThickness = 3
+    grid.ScrollBarImageColor3 = THEMES[currentThemeKey].Accent
+    grid.ZIndex = 5
+    grid.Parent = card
+
+    local gridLayout = Instance.new("UIGridLayout")
+    gridLayout.CellSize = UDim2.new(0, 46, 0, 52)
+    gridLayout.CellPadding = UDim2.new(0, 5, 0, 5)
+    gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    gridLayout.FillDirectionMaxCells = math.clamp(math.floor(tonumber(config.Columns) or 0), 0, 10)
+    gridLayout.Parent = grid
+
+    local emptyLabel = Instance.new("TextLabel")
+    emptyLabel.Name = "IconEmptyState"
+    emptyLabel.BackgroundTransparency = 1
+    emptyLabel.Position = grid.Position
+    emptyLabel.Size = grid.Size
+    emptyLabel.Font = Enum.Font.GothamMedium
+    emptyLabel.Text = config.EmptyText or "Ничего не найдено"
+    emptyLabel.TextColor3 = SUBTEXT
+    emptyLabel.TextSize = 12
+    emptyLabel.Visible = false
+    emptyLabel.ZIndex = 9
+    emptyLabel.Parent = card
+
+    local function updatePreview()
+        local item = selectedItem
+        previewImage.Visible = item ~= nil and item.Image ~= nil
+        previewGlyph.Visible = not previewImage.Visible
+        previewImage.Image = (item and item.Image) or ""
+        previewGlyph.Text = (item and item.Icon) or "—"
+        previewValue.Text = selectedValue or "Не выбрано"
+    end
+
+    local function getFavoriteValues()
+        local out = {}
+        for _, value in ipairs(favoriteValues) do
+            if favoriteMap[value] then out[#out + 1] = value end
+        end
+        return out
+    end
+
+    local function persistFavorites()
+        if favoritesFlag then
+            local out = {}
+            for i, value in ipairs(getFavoriteValues()) do out[tostring(i)] = value end
+            self:SetFlag(favoritesFlag, out)
+        end
+    end
+
+    local function persistRecent()
+        if recentFlag then
+            local out = {}
+            for i, value in ipairs(recentValues) do out[tostring(i)] = value end
+            self:SetFlag(recentFlag, out)
+        end
+    end
+
+    local function toggleFavorite(value)
+        if favoriteMap[value] then removeFavorite(value)
+        else addFavorite(value) end
+        persistFavorites()
+        if renderItems then renderItems() end
+        return favoriteMap[value] == true
+    end
+
+    local function setSelection(value, fireCallback)
+        if value == nil or value == "" then
+            selectedValue = nil
+            selectedItem = nil
+            updatePreview()
+            if renderItems then renderItems() end
+            if flag then self:SetFlag(flag, nil) end
+            if fireCallback and type(config.Callback) == "function" then config.Callback(nil, nil) end
+            return true
+        end
+        local item
+        if type(value) == "table" then
+            item = normalizeItem(value)
+            if not item then return false end
+            value = item.Value
+        else
+            value = normalizeValue(value)
+            if not value then return false end
+        end
+        item = byValue[value] or addItem(item or value)
+        if not item then return false end
+        selectedValue = item.Value
+        selectedItem = item
+        addRecent(selectedValue)
+        updatePreview()
+        if renderItems then renderItems() end
+        if flag then self:SetFlag(flag, selectedValue) end
+        persistRecent()
+        if fireCallback and type(config.Callback) == "function" then config.Callback(selectedValue, item.Raw) end
+        return true
+    end
+
+    local function persistModes()
+        updateModes()
+    end
+
+    renderItems = function()
+        for _, child in ipairs(grid:GetChildren()) do
+            if child:IsA("Frame") then child:Destroy() end
+        end
+        local query = lowerText(searchBox.Text or "")
+        local candidates = {}
+        if mode == "recent" then
+            for _, value in ipairs(recentValues) do
+                if byValue[value] then candidates[#candidates + 1] = byValue[value] end
+            end
+        else
+            for _, item in ipairs(items) do candidates[#candidates + 1] = item end
+        end
+
+        local shown = 0
+        for _, item in ipairs(candidates) do
+            local inMode = mode == "all"
+                or (mode == "favorites" and favoriteMap[item.Value])
+                or (mode == "recent" and recentMap[item.Value])
+            local searchText = lowerText(item.Name .. " " .. item.Value .. " " .. (item.Icon or "") .. " " .. (item.Image or "") .. " " .. item.Search)
+            if inMode and (query == "" or searchText:find(query, 1, true)) then
+                shown = shown + 1
+                local tile = Instance.new("Frame")
+                tile.Name = "Icon_" .. item.Name
+                tile.BackgroundColor3 = BG_HOVER
+                tile.BorderSizePixel = 0
+                tile.LayoutOrder = shown
+                tile.ZIndex = 6
+                tile.Parent = grid
+                createCorner(tile, 8)
+
+                local selectButton = Instance.new("TextButton")
+                selectButton.BackgroundTransparency = 1
+                selectButton.BorderSizePixel = 0
+                selectButton.AutoButtonColor = false
+                selectButton.Size = UDim2.new(1, 0, 1, 0)
+                selectButton.Text = ""
+                selectButton.ZIndex = 7
+                selectButton.Parent = tile
+
+                if item.Image then
+                    local image = Instance.new("ImageLabel")
+                    image.BackgroundTransparency = 1
+                    image.Position = UDim2.new(0.5, -14, 0, 4)
+                    image.Size = UDim2.new(0, 28, 0, 28)
+                    image.ScaleType = Enum.ScaleType.Fit
+                    image.Image = item.Image
+                    image.ZIndex = 8
+                    image.Parent = selectButton
+                else
+                    local glyph = Instance.new("TextLabel")
+                    glyph.BackgroundTransparency = 1
+                    glyph.Position = UDim2.new(0, 2, 0, 2)
+                    glyph.Size = UDim2.new(1, -4, 0, 31)
+                    glyph.Font = Enum.Font.GothamBold
+                    glyph.Text = item.Icon or "?"
+                    glyph.TextColor3 = TEXT_COLOR
+                    glyph.TextSize = 22
+                    glyph.ZIndex = 8
+                    glyph.Parent = selectButton
+                end
+
+                local caption = Instance.new("TextLabel")
+                caption.BackgroundTransparency = 1
+                caption.Position = UDim2.new(0, 2, 1, -16)
+                caption.Size = UDim2.new(1, -4, 0, 13)
+                caption.Font = Enum.Font.Gotham
+                caption.Text = item.Name
+                caption.TextColor3 = SUBTEXT
+                caption.TextSize = 8
+                caption.TextTruncate = Enum.TextTruncate.AtEnd
+                caption.ZIndex = 8
+                caption.Parent = selectButton
+
+                local stroke = Instance.new("UIStroke")
+                stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+                stroke.Color = THEMES[currentThemeKey].Accent
+                stroke.Thickness = 1.5
+                stroke.Transparency = selectedValue == item.Value and 0.15 or 1
+                stroke.Parent = tile
+
+                local star = Instance.new("TextButton")
+                star.BackgroundTransparency = 1
+                star.BorderSizePixel = 0
+                star.AutoButtonColor = false
+                star.Position = UDim2.new(1, -18, 0, 1)
+                star.Size = UDim2.new(0, 16, 0, 16)
+                star.Font = Enum.Font.GothamBold
+                star.Text = favoriteMap[item.Value] and "★" or "☆"
+                star.TextColor3 = favoriteMap[item.Value] and THEMES[currentThemeKey].Accent or SUBTEXT
+                star.TextSize = 12
+                star.ZIndex = 10
+                star.Parent = tile
+                star.MouseButton1Click:Connect(function() toggleFavorite(item.Value) end)
+                selectButton.MouseButton1Click:Connect(function() setSelection(item.Value, true) end)
+            end
+        end
+        emptyLabel.Visible = shown == 0
+        emptyLabel.Text = config.EmptyText or "Ничего не найдено"
+    end
+
+    local function setFavoriteValues(values, save)
+        favoriteValues = {}
+        favoriteMap = {}
+        for _, value in ipairs(readStoredValues(values)) do addFavorite(value) end
+        for _, value in ipairs(favoriteValues) do
+            if not byValue[value] then addItem(value) end
+        end
+        if save then persistFavorites() end
+        renderItems()
+    end
+
+    local function setRecentValues(values, save)
+        recentValues = {}
+        recentMap = {}
+        local stored = readStoredValues(values)
+        for i = #stored, 1, -1 do addRecent(stored[i]) end
+        for _, value in ipairs(recentValues) do
+            if not byValue[value] then addItem(value) end
+        end
+        if save then persistRecent() end
+        renderItems()
+    end
+
+    local function applyManualImage()
+        local image = normalizeImage(manualBox.Text)
+        if not image then
+            manualBox.TextColor3 = Color3.fromRGB(255, 105, 105)
+            return false
+        end
+        manualBox.TextColor3 = TEXT_COLOR
+        setSelection({ Name = "Image", Value = image, Image = image }, true)
+        return true
+    end
+
+    updatePreview()
+    updateModes()
+    renderItems()
+    searchBox:GetPropertyChangedSignal("Text"):Connect(renderItems)
+    applyImage.MouseButton1Click:Connect(applyManualImage)
+    manualBox.FocusLost:Connect(function(enterPressed)
+        if enterPressed then applyManualImage() end
+    end)
+    for _, item in ipairs(items) do
+        -- Избранное может быть задано непосредственно в item-конфиге.
+        if item.Favorite then addFavorite(item.Value) end
+    end
+    if favoritesFlag and #favoriteValues > 0 then persistFavorites() end
+
+    local obj = { Instance = card }
+    obj.Get = function() return selectedValue end
+    obj.Set = function(first, second)
+        local value
+        if first == obj then value = second else value = first end
+        return setSelection(value, true)
+    end
+    obj.Search = function(first, second)
+        local value
+        if first == obj then value = second else value = first end
+        searchBox.Text = tostring(value or "")
+        renderItems()
+        return obj
+    end
+    obj.SetFilter = function(first, second)
+        local value
+        if first == obj then value = second else value = first end
+        if not setMode(value) then return false end
+        renderItems()
+        return true
+    end
+    obj.ToggleFavorite = function(first, second)
+        local value
+        if first == obj then value = second else value = first end
+        local key = itemValue(value)
+        if not key then return false end
+        if not byValue[key] then addItem(value) end
+        return toggleFavorite(key)
+    end
+    obj.GetFavorites = function()
+        return getFavoriteValues()
+    end
+    obj.SetFavorites = function(first, second)
+        local values
+        if first == obj then values = second else values = first end
+        setFavoriteValues(values, true)
+        return obj
+    end
+    obj.GetRecent = function()
+        local out = {}
+        for _, value in ipairs(recentValues) do out[#out + 1] = value end
+        return out
+    end
+    obj.SetRecent = function(first, second)
+        local values
+        if first == obj then values = second else values = first end
+        setRecentValues(values, true)
+        return obj
+    end
+    obj.UpdateTheme = function()
+        previewFrame.BackgroundColor3 = BG_HOVER
+        searchBox.PlaceholderColor3 = SUBTEXT
+        manualBox.PlaceholderColor3 = SUBTEXT
+        applyImage.BackgroundColor3 = THEMES[currentThemeKey].Accent
+        grid.ScrollBarImageColor3 = THEMES[currentThemeKey].Accent
+        updateModes()
+        renderItems()
+    end
+    table.insert(self.Elements, { Type = "IconPicker", Instance = card, UpdateTheme = obj.UpdateTheme })
+    if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
+    if favoritesFlag and favoritesFlag ~= flag then
+        table.insert(self._flagElements, { flag = favoritesFlag, obj = { Set = function(value) setFavoriteValues(value, false) end } })
+    end
+    if recentFlag and recentFlag ~= flag then
+        table.insert(self._flagElements, { flag = recentFlag, obj = { Set = function(value) setRecentValues(value, false) end } })
     end
     return obj
 end
@@ -3272,6 +4476,86 @@ function Library:_addSection(tab, config)
     return wrap
 end
 
+-- ============================================================
+-- KEYBIND (режимы Press / Hold / Toggle и предупреждение о конфликтах)
+-- ============================================================
+-- local bind = tab:CreateKeybind({
+--     Name = "ESP", Flag = "esp_key", Mode = "Toggle", CurrentKeybind = Enum.KeyCode.F,
+--     Callback = function(key, mode, state) end,
+-- })
+-- bind:SetMode("Hold")  bind:CycleMode()  bind:GetState()  bind:GetConflict()
+-- Callback(keycode, mode, state): Press/Hold получают state = true на нажатии,
+-- Hold — ещё state = false на отпускании, Toggle — переключает состояние.
+-- Клавиши разных хоткеев проверяются на совпадение: у конфликтующих биндов
+-- жёлтая рамка и подпись «⚠ Имя», а Library:GetKeybindConflicts() даёт полный список.
+local KEYBIND_MODES = { "Press", "Hold", "Toggle" }
+
+local function listHas(list, value)
+    for _, item in ipairs(list) do
+        if item == value then return true end
+    end
+    return false
+end
+
+function Library:_registerKeybind(entry)
+    self._keybinds = self._keybinds or {}
+    table.insert(self._keybinds, entry)
+    self:RefreshKeybindConflicts()
+    return entry
+end
+
+function Library:GetKeybinds()
+    local out = {}
+    for i, entry in ipairs(self._keybinds or {}) do
+        out[i] = {
+            Name = entry.Name,
+            Key = entry.GetKey(),
+            Mode = entry.GetMode(),
+            State = entry.GetState(),
+            Conflict = entry.GetConflict(),
+            Instance = entry.Instance,
+        }
+    end
+    return out
+end
+
+-- Возвращает { [KeyName] = { "Бинд 1", "Бинд 2", ... } } — только реальные конфликты.
+function Library:GetKeybindConflicts()
+    local grouped = {}
+    for _, entry in ipairs(self._keybinds or {}) do
+        local key = entry.GetKey()
+        local keyName = key and (typeof(key) == "EnumItem" and key.Name or tostring(key)) or ""
+        if keyName ~= "" and keyName ~= "None" then
+            grouped[keyName] = grouped[keyName] or {}
+            table.insert(grouped[keyName], entry.Name or "Keybind")
+        end
+    end
+    local conflicts = {}
+    for keyName, names in pairs(grouped) do
+        if #names > 1 then conflicts[keyName] = names end
+    end
+    return conflicts
+end
+
+function Library:RefreshKeybindConflicts()
+    local conflicts = self:GetKeybindConflicts()
+    for _, entry in ipairs(self._keybinds or {}) do
+        local key = entry.GetKey()
+        local keyName = key and (typeof(key) == "EnumItem" and key.Name or tostring(key)) or ""
+        local names = conflicts[keyName]
+        if names then
+            local copy = {}
+            for i, name in ipairs(names) do
+                if name ~= entry.Name then copy[#copy + 1] = name end
+            end
+            entry.SetConflict(copy)
+        else
+            entry.SetConflict(nil)
+        end
+    end
+    return conflicts
+end
+
 function Library:_addKeybind(tab, config)
     local self = self
     local flag = config.Flag
@@ -3285,18 +4569,69 @@ function Library:_addKeybind(tab, config)
         return nil
     end
 
+    local function normalizeMode(value)
+        if type(value) ~= "string" then return nil end
+        for _, known in ipairs(KEYBIND_MODES) do
+            if lowerText(known) == lowerText(value) then return known end
+        end
+        return nil
+    end
+
+    local modeList = {}
+    for _, candidate in ipairs(type(config.Modes) == "table" and config.Modes or KEYBIND_MODES) do
+        local known = normalizeMode(candidate)
+        if known and not listHas(modeList, known) then modeList[#modeList + 1] = known end
+    end
+    if #modeList == 0 then modeList = { "Press" } end
+
     local current
     if flag and self.Flags[flag] ~= nil then current = decodeKey(self.Flags[flag]) end
     if not current then current = config.CurrentKeybind or Enum.KeyCode.RightShift end
 
+    local mode = normalizeMode(config.Mode) or normalizeMode(flag and self.Flags[flag .. "_mode"])
+    if not mode or not listHas(modeList, mode) then mode = modeList[1] end
+
     local listening = false
+    local state = false
+    local conflictNames = nil
+    local listenConn
+
     local row = makeRowBase(tab.Content, config.Order, 40)
     row.Text = "   " .. (config.Name or "Keybind")
     addHover(row, self)
 
+    local conflictLabel = Instance.new("TextLabel")
+    conflictLabel.Name = "KeybindConflict"
+    conflictLabel.BackgroundTransparency = 1
+    conflictLabel.Position = UDim2.new(1, -216, 0.5, -9)
+    conflictLabel.Size = UDim2.new(0, 64, 0, 18)
+    conflictLabel.Font = Enum.Font.GothamMedium
+    conflictLabel.Text = ""
+    conflictLabel.TextColor3 = Color3.fromRGB(255, 180, 60)
+    conflictLabel.TextSize = 10
+    conflictLabel.TextXAlignment = Enum.TextXAlignment.Right
+    conflictLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    conflictLabel.ZIndex = 5
+    conflictLabel.Parent = row
+
+    local modeBadge = Instance.new("TextButton")
+    modeBadge.Name = "KeybindMode"
+    modeBadge.Size = UDim2.new(0, 52, 0, 24)
+    modeBadge.Position = UDim2.new(1, -148, 0.5, -12)
+    modeBadge.BackgroundColor3 = BG_HOVER
+    modeBadge.AutoButtonColor = false
+    modeBadge.Font = Enum.Font.GothamBold
+    modeBadge.Text = mode
+    modeBadge.TextColor3 = SUBTEXT
+    modeBadge.TextSize = 10
+    modeBadge.ZIndex = 5
+    modeBadge.Parent = row
+    createCorner(modeBadge, 8)
+
     local keyBadge = Instance.new("TextButton")
+    keyBadge.Name = "KeybindKey"
     keyBadge.Size = UDim2.new(0, 84, 0, 26)
-    keyBadge.Position = UDim2.new(1, -94, 0.5, -13)
+    keyBadge.Position = UDim2.new(1, -92, 0.5, -13)
     keyBadge.BackgroundColor3 = BG_HOVER
     keyBadge.AutoButtonColor = false
     keyBadge.Font = Enum.Font.GothamBold
@@ -3314,17 +4649,47 @@ function Library:_addKeybind(tab, config)
     badgeStroke.Thickness = 1.5
     badgeStroke.Parent = keyBadge
 
-    local listenConn
+    local CONFLICT_COLOR = Color3.fromRGB(255, 180, 60)
 
     local function refresh()
+        local hasConflict = conflictNames ~= nil and #conflictNames > 0
         keyBadge.Text = listening and "..." or (current and current.Name or "None")
-        badgeStroke.Color = THEMES[currentThemeKey].Accent
-        badgeStroke.Transparency = listening and 0.2 or 1
+        modeBadge.Text = mode
+        modeBadge.TextColor3 = (state and mode ~= "Press") and Color3.fromRGB(255, 255, 255) or SUBTEXT
+        modeBadge.BackgroundColor3 = (state and mode ~= "Press") and THEMES[currentThemeKey].Accent or BG_HOVER
+        if hasConflict then
+            badgeStroke.Color = CONFLICT_COLOR
+            badgeStroke.Transparency = 0.1
+            local suffix = #conflictNames > 1 and (" +" .. (#conflictNames - 1)) or ""
+            conflictLabel.Text = "⚠ " .. tostring(conflictNames[1]) .. suffix
+        else
+            badgeStroke.Color = THEMES[currentThemeKey].Accent
+            badgeStroke.Transparency = listening and 0.2 or 1
+            conflictLabel.Text = ""
+        end
+    end
+
+    local function setMode(value)
+        local known = normalizeMode(value)
+        if not known or not listHas(modeList, known) then return false end
+        mode = known
+        state = false
+        if flag then self:SetFlag(flag .. "_mode", mode) end
+        refresh()
+        return true
+    end
+
+    local function cycleMode()
+        local index = 1
+        for i, known in ipairs(modeList) do
+            if known == mode then index = i end
+        end
+        return setMode(modeList[index % #modeList + 1])
     end
 
     local function stopListen()
         listening = false
-        if listenConn then listenConn:Disconnect(); listenConn = nil end
+        if listenConn then listenConn:Disconnect() listenConn = nil end
         refresh()
     end
 
@@ -3338,28 +4703,104 @@ function Library:_addKeybind(tab, config)
             current = input.KeyCode
             stopListen()
             self:SetFlag(flag, current.Name)
-            if config.Callback then config.Callback(current) end
+            self:RefreshKeybindConflicts()
+            if config.Callback then config.Callback(current, mode, state) end
         end)
     end
 
     keyBadge.MouseButton1Click:Connect(startListen)
+    modeBadge.MouseButton1Click:Connect(function()
+        if config.ModeCycling == false then return end
+        cycleMode()
+    end)
+
+    -- Боевые нажатия: работают всегда, кроме момента переназначения клавиши.
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if listening or not current then return end
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        if input.KeyCode ~= current then return end
+        if gameProcessed and config.IgnoreGameProcessed ~= false then return end
+        if mode == "Toggle" then
+            state = not state
+        else
+            state = true
+        end
+        refresh()
+        if type(config.Callback) == "function" then config.Callback(current, mode, state) end
+        if type(config.OnDown) == "function" then config.OnDown(current, state) end
+    end)
+
+    if listHas(modeList, "Hold") then
+        UserInputService.InputEnded:Connect(function(input)
+            if listening or not current then return end
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if input.KeyCode ~= current then return end
+            if mode ~= "Hold" or not state then return end
+            state = false
+            refresh()
+            if type(config.Callback) == "function" then config.Callback(current, mode, false) end
+            if type(config.OnUp) == "function" then config.OnUp(current, false) end
+        end)
+    end
+
     refresh()
 
-    local obj = {
+    local obj
+    obj = {
         Instance = row,
         Get = function() return current end,
-        Set = function(kc)
+        Set = function(first, second)
+            local kc
+            if first == obj then kc = second else kc = first end
             current = decodeKey(kc) or kc
             refresh()
             self:SetFlag(flag, current and current.Name or nil)
-            if config.Callback then config.Callback(current) end
+            self:RefreshKeybindConflicts()
+            if config.Callback then config.Callback(current, mode, state) end
+            return obj
+        end,
+        GetMode = function() return mode end,
+        SetMode = function(first, second)
+            local value
+            if first == obj then value = second else value = first end
+            return setMode(value)
+        end,
+        CycleMode = function() return cycleMode() end,
+        GetState = function() return state and true or false end,
+        IsActive = function() return state and true or false end,
+        SetState = function(first, second)
+            -- вызов и точкой, и двоеточием; возвращаем true (успех), а состояние читай GetState()
+            local value
+            if first == obj then value = second else value = first end
+            state = value and true or false
+            refresh()
+            return true
+        end,
+        GetConflict = function()
+            local out = {}
+            for i, name in ipairs(conflictNames or {}) do out[i] = name end
+            return out
         end,
         UpdateTheme = refresh,
     }
     table.insert(self.Elements, { Type = "Keybind", Instance = row, UpdateTheme = refresh })
     if flag then table.insert(self._flagElements, { flag = flag, obj = obj }) end
+
+    self:_registerKeybind({
+        Name = config.Name or "Keybind",
+        Instance = row,
+        GetKey = function() return current end,
+        GetMode = function() return mode end,
+        GetState = function() return state and true or false end,
+        GetConflict = function() return obj.GetConflict() end,
+        SetConflict = function(names)
+            conflictNames = names
+            refresh()
+        end,
+    })
     return obj
 end
+
 
 function Library:_addParagraph(tab, config)
     local card = Instance.new("Frame")
@@ -4646,19 +6087,313 @@ function Library:SetTheme(key)
 end
 
 -- ============================================================
--- NOTIFY
+-- ACCESSIBILITY (меньше анимаций, масштаб, контраст)
 -- ============================================================
-function Library:Notify(config)
-    local kind = config.Kind or "info"
-    local accent = THEMES[currentThemeKey].Accent
-    local symbol = "💬"
-    if kind == "success" then accent = Color3.fromRGB(60, 200, 120); symbol = "✅"
-    elseif kind == "error" then accent = Color3.fromRGB(235, 80, 90); symbol = "❌"
-    elseif kind == "warning" then accent = Color3.fromRGB(255, 180, 60); symbol = "⚠️" end
+local ACCESSIBILITY = { ReduceMotion = false, Scale = 1, HighContrast = false }
+local CONTRAST_PANEL = Color3.fromRGB(8, 8, 10)
+local CONTRAST_TEXT = Color3.fromRGB(255, 255, 255)
+local CONTRAST_SUBTEXT = Color3.fromRGB(214, 214, 220)
 
-    local notify = Instance.new("Frame")
-    notify.Size = UDim2.new(0, 280, 0, 70)
-    notify.Position = UDim2.new(1, 300, 0, 20)
+function Library:GetAccessibility()
+    return {
+        ReduceMotion = ACCESSIBILITY.ReduceMotion,
+        Scale = ACCESSIBILITY.Scale,
+        HighContrast = ACCESSIBILITY.HighContrast,
+    }
+end
+
+function Library:_saveAccessibility()
+    self._accessibilityFlag = self._accessibilityFlag or "accessibility"
+    self:SetFlag(self._accessibilityFlag, {
+        ReduceMotion = ACCESSIBILITY.ReduceMotion,
+        Scale = ACCESSIBILITY.Scale,
+        HighContrast = ACCESSIBILITY.HighContrast,
+    })
+end
+
+-- Применяет настройки ко всем уже созданным элементам (нужно после SetTheme,
+-- потому что тема возвращает стандартные цвета).
+function Library:_applyAccessibility()
+    if not ACCESSIBILITY.HighContrast then return end
+    if self.ScreenGui then self:_applyContrast(self.ScreenGui) end
+end
+
+function Library:_applyContrast(object)
+    if typeof(object) ~= "Instance" then return end
+    if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+        object.TextColor3 = CONTRAST_TEXT
+        if object:IsA("TextBox") then
+            pcall(function() object.PlaceholderColor3 = CONTRAST_SUBTEXT end)
+        end
+    end
+    if object:IsA("Frame") or object:IsA("TextButton") or object:IsA("TextBox") or object:IsA("CanvasGroup") then
+        -- Затемняем только панели/строки: акцентные кнопки остаются цветными.
+        local transparency = tonumber(object.BackgroundTransparency)
+        local color = object.BackgroundColor3
+        if transparency and transparency < 0.5 and color and math.max(color.R, color.G, color.B) <= 0.5 then
+            object.BackgroundColor3 = CONTRAST_PANEL
+        end
+    end
+    for _, child in ipairs(object:GetChildren()) do
+        self:_applyContrast(child)
+    end
+end
+
+function Library:_setHighContrast(enabled)
+    ACCESSIBILITY.HighContrast = enabled and true or false
+    if ACCESSIBILITY.HighContrast then
+        if self.ScreenGui and not self._contrastConn then
+            local ok, conn = pcall(function()
+                return self.ScreenGui.DescendantAdded:Connect(function(desc)
+                    if ACCESSIBILITY.HighContrast then self:_applyContrast(desc) end
+                end)
+            end)
+            self._contrastConn = ok and conn or nil
+        end
+        if self.ScreenGui then self:_applyContrast(self.ScreenGui) end
+    else
+        if self._contrastConn then self._contrastConn:Disconnect() self._contrastConn = nil end
+        if self.ScreenGui then
+            if self.Main then
+                self.Main.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+            end
+            self:_applyThemeVisuals()
+            for _, el in ipairs(self.Elements or {}) do
+                if el.UpdateTheme then el.UpdateTheme() end
+            end
+        end
+    end
+end
+
+function Library:_syncUIScale()
+    if not self.ScreenGui then return end
+    if not self._uiScale then
+        local scale = Instance.new("UIScale")
+        scale.Name = "AccessibilityScale"
+        scale.Parent = self.ScreenGui
+        self._uiScale = scale
+    end
+    self._uiScale.Scale = ACCESSIBILITY.Scale
+end
+
+function Library:SetAccessibility(config)
+    config = config or {}
+    if config.ReduceMotion ~= nil then
+        ACCESSIBILITY.ReduceMotion = config.ReduceMotion and true or false
+        TWEEN_SCALE = ACCESSIBILITY.ReduceMotion and 0 or 1
+    end
+    if config.Scale ~= nil then
+        local scale = tonumber(config.Scale)
+        if scale then
+            ACCESSIBILITY.Scale = math.clamp(scale, 0.6, 1.6)
+            self:_syncUIScale()
+        end
+    end
+    if config.HighContrast ~= nil then
+        self:_setHighContrast(config.HighContrast)
+    end
+    if config.Sounds ~= nil then
+        self:SetSoundsEnabled(config.Sounds and true or false)
+    end
+    if config.Save ~= false then self:_saveAccessibility() end
+    return self:GetAccessibility()
+end
+
+function Library:SetReduceMotion(enabled) return self:SetAccessibility({ ReduceMotion = enabled }) end
+function Library:SetUIScale(scale) return self:SetAccessibility({ Scale = scale }) end
+function Library:SetHighContrast(enabled) return self:SetAccessibility({ HighContrast = enabled }) end
+
+-- ============================================================
+-- NOTIFY (очередь, прогресс-бар, кнопки действий)
+-- ============================================================
+-- local note = Library:Notify({
+--     Kind = "success", Title = "Готово", Content = "Конфиг сохранён",
+--     Duration = 6, Progress = 0, Sticky = false,
+--     Actions = { { Name = "Открыть", Callback = function(note) end, Primary = true } },
+-- })
+-- note:SetProgress(0.5)  note:SetTitle("...")  note.Close(note)  note:Close()
+-- Возвращается handle: он и объект (SetProgress/SetTitle/Close/Instance/Queued),
+-- и обычное уведомление — чтение свойств и методы Frame проксируются (note.Position,
+-- note:Destroy()). Уведомления сверх лимита (MaxVisible, по умолчанию 4) ждут в
+-- очереди; когда слот освобождается, показывается самое приоритетное (Priority).
+local NOTIFY_KINDS = {
+    info    = { Symbol = "💬" },
+    success = { Symbol = "✅", Accent = Color3.fromRGB(60, 200, 120) },
+    error   = { Symbol = "❌", Accent = Color3.fromRGB(235, 80, 90) },
+    warning = { Symbol = "⚠️", Accent = Color3.fromRGB(255, 180, 60) },
+    loading = { Symbol = "⏳" },
+}
+local NOTIFY_WIDTH = 280
+local NOTIFY_GAP = 8
+local NOTIFY_MARGIN = 20
+
+function Library:_notifyMaxVisible(config)
+    local explicit = config and tonumber(config.MaxVisible)
+    if explicit and explicit >= 1 then return math.floor(explicit) end
+    local configured = tonumber(self.Config and self.Config.MaxNotifications)
+    if configured and configured >= 1 then return math.floor(configured) end
+    return 4
+end
+
+function Library:_visibleNotifyCount()
+    return #(self._activeNotifies or {})
+end
+
+function Library:_notifyHeight(config, actionCount)
+    local hasContent = config.Content ~= nil and tostring(config.Content) ~= ""
+    return (hasContent and 66 or 44) + (actionCount > 0 and 30 or 0)
+end
+
+function Library:_reflowNotifies()
+    local y = NOTIFY_MARGIN
+    for _, record in ipairs(self._activeNotifies or {}) do
+        TweenService:Create(record.Frame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Position = UDim2.new(1, -(NOTIFY_WIDTH + NOTIFY_MARGIN), 0, y),
+        }):Play()
+        y = y + record.Height + NOTIFY_GAP
+    end
+end
+
+-- Показывает следующее уведомление из очереди (самое приоритетное, при равенстве — самое раннее)
+function Library:_promoteNotify()
+    local queue = self._notifyQueue
+    if not queue or #queue == 0 then return end
+    local bestIndex, best
+    for i, record in ipairs(queue) do
+        if not best or record.Priority > best.Priority
+            or (record.Priority == best.Priority and record.Seq < best.Seq) then
+            bestIndex, best = i, record
+        end
+    end
+    if not best then return end
+    if self:_visibleNotifyCount() >= self:_notifyMaxVisible(best.Config) then return end
+    table.remove(queue, bestIndex)
+    if best.Handle.Closed then return self:_promoteNotify() end
+    best.Handle.Queued = false
+    self:_buildNotification(best.Config, best.Handle)
+end
+
+function Library:_createNotifyHandle(config)
+    local self = self
+    local handle = {
+        Config = config,
+        Closed = false,
+        Queued = false,
+        Visible = false,
+        Instance = nil,
+        Frame = nil,
+        Priority = tonumber(config.Priority) or 0,
+        Progress = tonumber(config.Progress),
+    }
+    local visuals = {}
+    handle._visuals = visuals
+
+    -- Методы handle вызываются и через точку, и через двоеточие:
+    -- note:SetProgress(0.5) и note.SetProgress(0.5) равнозначны.
+    local function pick(value, extra)
+        if value == handle or value == handle.Proxy then return extra end
+        return value
+    end
+
+    function handle.Close()
+        if handle.Closed then return false end
+        if handle.Queued then
+            handle.Queued = false
+            handle.Closed = true
+            handle.Visible = false
+            for i, record in ipairs(self._notifyQueue or {}) do
+                if record.Handle == handle then
+                    table.remove(self._notifyQueue, i)
+                    break
+                end
+            end
+            if type(config.OnClose) == "function" then pcall(config.OnClose, handle.Proxy, "queued") end
+            return true
+        end
+        if visuals.Close then return visuals.Close() end
+        return false
+    end
+
+    function handle.SetProgress(first, second, third)
+        local value, instant
+        if first == handle or first == handle.Proxy then value, instant = second, third
+        else value, instant = first, second end
+        if value == nil then return false end
+        handle.Progress = math.clamp(tonumber(value) or 0, 0, 1)
+        if visuals.SetProgress then return visuals.SetProgress(handle.Progress, instant) end
+        return false
+    end
+
+    function handle.SetTitle(first, second)
+        local text = pick(first, second)
+        if visuals.SetTitle then return visuals.SetTitle(text) end
+        return false
+    end
+
+    function handle.SetContent(first, second)
+        local text = pick(first, second)
+        if visuals.SetContent then return visuals.SetContent(text) end
+        return false
+    end
+
+    function handle.SetKind(first, second)
+        local kind = pick(first, second)
+        if visuals.SetKind then return visuals.SetKind(kind) end
+        return false
+    end
+
+    function handle.IsVisible() return handle.Visible end
+
+    -- Прокси: handle ведёт себя и как объект уведомления, и как сам Frame.
+    local proxy
+    proxy = setmetatable({}, {
+        __index = function(_, key)
+            local own = rawget(handle, key)
+            if own ~= nil then return own end
+            local frame = rawget(handle, "Frame")
+            if not frame then return nil end
+            local value = frame[key]
+            if type(value) == "function" then
+                return function(_, ...) return value(frame, ...) end
+            end
+            return value
+        end,
+        __newindex = function(_, key, value)
+            local frame = rawget(handle, "Frame")
+            if frame then frame[key] = value else rawset(handle, key, value) end
+        end,
+    })
+    handle.Proxy = proxy
+    return handle
+end
+
+function Library:_buildNotification(config, handle)
+    local self = self
+    local kindConfig = NOTIFY_KINDS[config.Kind] or NOTIFY_KINDS.info
+    local accent = config.Accent or kindConfig.Accent or THEMES[currentThemeKey].Accent
+    local symbol = config.Icon or kindConfig.Symbol
+
+    local actions = {}
+    for _, source in ipairs(type(config.Actions) == "table" and config.Actions or {}) do
+        if type(source) == "table" and (source.Name or source.Text or source.Icon) then
+            actions[#actions + 1] = source
+        elseif type(source) == "string" then
+            actions[#actions + 1] = { Name = source }
+        end
+    end
+
+    local hasContent = config.Content ~= nil and tostring(config.Content) ~= ""
+    local hasProgress = config.Progress ~= nil and config.Progress ~= false
+    local duration = config.Duration
+    if duration == nil then duration = config.Sticky and 0 or 5 end
+    duration = tonumber(duration) or 0
+    local sticky = config.Sticky == true or duration <= 0 or duration == math.huge
+    local height = self:_notifyHeight(config, #actions)
+
+    local notify = Instance.new("CanvasGroup")
+    notify.Name = "Notification"
+    notify.Size = UDim2.new(0, NOTIFY_WIDTH, 0, height)
+    notify.Position = UDim2.new(1, NOTIFY_MARGIN, 0, NOTIFY_MARGIN)
     notify.BackgroundColor3 = BG_PANEL
     notify.BorderSizePixel = 0
     notify.ZIndex = 999
@@ -4666,6 +6401,7 @@ function Library:Notify(config)
     createCorner(notify, 12)
 
     local stroke = Instance.new("UIStroke")
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     stroke.Color = accent
     stroke.Thickness = 2
     stroke.Parent = notify
@@ -4690,84 +6426,625 @@ function Library:Notify(config)
     iconLabel.ZIndex = 1001
     iconLabel.Parent = iconCircle
 
+    local percentLabel
+    if hasProgress and config.ShowPercent ~= false then
+        percentLabel = Instance.new("TextLabel")
+        percentLabel.Name = "NotifyPercent"
+        percentLabel.BackgroundTransparency = 1
+        percentLabel.Position = UDim2.new(1, -58, 0, 12)
+        percentLabel.Size = UDim2.new(0, 46, 0, 18)
+        percentLabel.Font = Enum.Font.GothamBold
+        percentLabel.Text = "0%"
+        percentLabel.TextColor3 = accent
+        percentLabel.TextSize = 11
+        percentLabel.TextXAlignment = Enum.TextXAlignment.Right
+        percentLabel.ZIndex = 1000
+        percentLabel.Parent = notify
+    end
+
     local title = Instance.new("TextLabel")
+    title.Name = "NotifyTitle"
     title.BackgroundTransparency = 1
     title.Position = UDim2.new(0, 46, 0, 10)
-    title.Size = UDim2.new(1, -58, 0, 20)
+    title.Size = UDim2.new(1, percentLabel and -112 or -58, 0, 20)
     title.Font = Enum.Font.GothamBold
     title.Text = config.Title or "Уведомление"
     title.TextColor3 = TEXT_COLOR
     title.TextSize = 14
     title.TextXAlignment = Enum.TextXAlignment.Left
+    title.TextTruncate = Enum.TextTruncate.AtEnd
     title.ZIndex = 1000
     title.Parent = notify
 
     local content = Instance.new("TextLabel")
+    content.Name = "NotifyContent"
     content.BackgroundTransparency = 1
     content.Position = UDim2.new(0, 46, 0, 30)
-    content.Size = UDim2.new(1, -58, 0, 32)
+    content.Size = UDim2.new(1, -58, 0, 28)
     content.Font = Enum.Font.Gotham
-    content.Text = config.Content or ""
+    content.Text = hasContent and tostring(config.Content) or ""
     content.TextColor3 = SUBTEXT
     content.TextSize = 12
     content.TextXAlignment = Enum.TextXAlignment.Left
     content.TextWrapped = true
+    content.Visible = hasContent
     content.ZIndex = 1000
     content.Parent = notify
 
-    -- Полоска-таймер: плавно сокращается за время показа уведомления
-    local timerBar = Instance.new("Frame")
-    timerBar.Position = UDim2.new(0, 12, 1, -7)
-    timerBar.Size = UDim2.new(1, -24, 0, 3)
-    timerBar.BackgroundColor3 = accent
-    timerBar.BackgroundTransparency = 0.25
-    timerBar.BorderSizePixel = 0
-    timerBar.ZIndex = 1000
-    timerBar.Parent = notify
-    createCorner(timerBar, 999)
-    TweenService:Create(timerBar, TweenInfo.new(config.Duration or 5, Enum.EasingStyle.Linear), {
-        Size = UDim2.new(0, 0, 0, 3),
-    }):Play()
-
-    -- Стек уведомлений: список активных, а не общий счётчик — так позиции
-    -- остаются верными, даже если уведомления с разной длительностью
-    -- закрываются не по порядку.
-    self._activeNotifies = self._activeNotifies or {}
-    table.insert(self._activeNotifies, notify)
-
-    local function reflow()
-        for i, n in ipairs(self._activeNotifies) do
-            local targetY = 20 + (i - 1) * 78
-            TweenService:Create(n, TweenInfo.new(0.38, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-                Position = UDim2.new(1, -300, 0, targetY),
-            }):Play()
+    local actionButtons = {}
+    for actionIndex, action in ipairs(actions) do
+        local button = Instance.new("TextButton")
+        button.Name = "NotifyAction_" .. actionIndex
+        button.BackgroundColor3 = action.Primary and accent or BG_HOVER
+        button.BackgroundTransparency = action.Primary and 0 or 0.2
+        button.BorderSizePixel = 0
+        button.AutoButtonColor = false
+        button.Font = Enum.Font.GothamBold
+        button.Text = tostring(action.Text or action.Name or "OK")
+        button.TextColor3 = action.Primary and Color3.fromRGB(255, 255, 255) or TEXT_COLOR
+        button.TextSize = 11
+        button.ZIndex = 1001
+        button.Parent = notify
+        createCorner(button, 7)
+        button.MouseButton1Click:Connect(function()
+            if type(action.Callback) == "function" then pcall(action.Callback, handle.Proxy, action) end
+            if action.Close ~= false then handle.Close() end
+        end)
+        actionButtons[#actionButtons + 1] = button
+    end
+    if #actionButtons > 0 then
+        local gap = 6
+        local buttonWidth = (NOTIFY_WIDTH - 24 - gap * (#actionButtons - 1)) / #actionButtons
+        for i, button in ipairs(actionButtons) do
+            button.Position = UDim2.new(0, 12 + (i - 1) * (buttonWidth + gap), 0, height - 32)
+            button.Size = UDim2.new(0, buttonWidth, 0, 22)
         end
     end
 
-    notify.Position = UDim2.new(1, 300, 0, 20 + (#self._activeNotifies - 1) * 78)
-    reflow()
+    -- Нижняя полоса: таймер показа (сокращается) либо прогресс задачи (растёт)
+    local track = Instance.new("Frame")
+    track.Name = hasProgress and "NotifyProgress" or "NotifyTimer"
+    track.Position = UDim2.new(0, 12, 1, -8)
+    track.Size = UDim2.new(1, -24, 0, 3)
+    track.BackgroundColor3 = accent
+    track.BackgroundTransparency = 0.75
+    track.BorderSizePixel = 0
+    -- у липкого уведомления нет обратного отсчёта, но прогресс-бар нужен
+    track.Visible = hasProgress or not sticky
+    track.ZIndex = 1000
+    track.Parent = notify
+    createCorner(track, 999)
+
+    local fill = Instance.new("Frame")
+    fill.Name = "Fill"
+    fill.Size = hasProgress and UDim2.new(0, 0, 1, 0) or UDim2.new(1, 0, 1, 0)
+    fill.BackgroundColor3 = accent
+    fill.BackgroundTransparency = 0.25
+    fill.BorderSizePixel = 0
+    fill.ZIndex = 1001
+    fill.Parent = track
+    createCorner(fill, 999)
+
+    handle.Frame = notify
+    handle.Instance = notify
+    handle.Height = height
+    handle.Visible = true
+    handle.Kind = config.Kind or "info"
+
+    self._activeNotifies = self._activeNotifies or {}
+    table.insert(self._activeNotifies, { Frame = notify, Height = height, Handle = handle })
+
+    local closed = false
+    local function finishClose()
+        if closed then return end
+        closed = true
+        handle.Closed = true
+        handle.Visible = false
+        for i, record in ipairs(self._activeNotifies or {}) do
+            if record.Handle == handle then
+                table.remove(self._activeNotifies, i)
+                break
+            end
+        end
+        self:_reflowNotifies()
+        if notify.Parent then notify:Destroy() end
+        if type(config.OnClose) == "function" then pcall(config.OnClose, handle.Proxy) end
+        self:_promoteNotify()
+    end
+
+    handle._visuals.Close = function()
+        if closed then return false end
+        local tween = TweenService:Create(notify, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Position = UDim2.new(1, NOTIFY_MARGIN, 0, notify.Position.Y.Offset),
+            GroupTransparency = 1,
+        })
+        tween:Play()
+        tween.Completed:Connect(finishClose)
+        return true
+    end
+
+    handle._visuals.SetTitle = function(text)
+        title.Text = tostring(text or "")
+        return true
+    end
+
+    handle._visuals.SetContent = function(text)
+        local value = tostring(text or "")
+        content.Text = value
+        content.Visible = value ~= ""
+        return true
+    end
+
+    handle._visuals.SetProgress = function(value, instant)
+        if not hasProgress then return false end
+        if percentLabel then
+            percentLabel.Text = string.format("%d%%", math.floor(value * 100 + 0.5))
+        end
+        if instant or config.ProgressTween == false then
+            fill.Size = UDim2.new(value, 0, 1, 0)
+        else
+            TweenService:Create(fill, TweenInfo.new(0.18), { Size = UDim2.new(value, 0, 1, 0) }):Play()
+        end
+        if value >= 1 and config.CloseOnComplete == true then
+            task.delay(tonumber(config.CloseDelay) or 0.35, function()
+                if not closed then handle.Close() end
+            end)
+        end
+        return true
+    end
+
+    handle._visuals.SetKind = function(kind)
+        local kindData = NOTIFY_KINDS[kind] or NOTIFY_KINDS.info
+        local newAccent = config.Accent or kindData.Accent or THEMES[currentThemeKey].Accent
+        stroke.Color = newAccent
+        iconCircle.BackgroundColor3 = newAccent
+        track.BackgroundColor3 = newAccent
+        fill.BackgroundColor3 = newAccent
+        iconLabel.Text = config.Icon or kindData.Symbol
+        if percentLabel then percentLabel.TextColor3 = newAccent end
+        handle.Kind = kind
+        return true
+    end
+
+    if type(config.OnClick) == "function" then
+        local body = Instance.new("TextButton")
+        body.Name = "NotifyBody"
+        body.BackgroundTransparency = 1
+        body.BorderSizePixel = 0
+        body.Text = ""
+        body.AutoButtonColor = false
+        body.Size = UDim2.new(1, 0, 1, 0)
+        body.ZIndex = 998
+        body.Parent = notify
+        body.MouseButton1Click:Connect(function()
+            pcall(config.OnClick, handle.Proxy)
+            if config.CloseOnClick ~= false then handle.Close() end
+        end)
+    end
+
+    if hasProgress then
+        handle.SetProgress(handle.Progress or 0, true)
+    elseif not sticky then
+        TweenService:Create(fill, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+            Size = UDim2.new(0, 0, 1, 0),
+        }):Play()
+        task.delay(duration, function()
+            if closed or handle.Queued then return end
+            handle.Close()
+        end)
+    end
 
     if config.Sound ~= false then self:_play("Notify") end
 
-    task.delay(config.Duration or 5, function()
-        local t = TweenService:Create(notify, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
-            Position = UDim2.new(1, 300, 0, notify.Position.Y.Offset),
-        })
-        t:Play()
-        t.Completed:Connect(function()
-            for i, n in ipairs(self._activeNotifies) do
-                if n == notify then
-                    table.remove(self._activeNotifies, i)
-                    break
-                end
-            end
-            reflow()
-            notify:Destroy()
-        end)
-    end)
-    return notify
+    -- Въезд справа: стартовая позиция за экраном, reflow плавно ставит на место
+    self:_reflowNotifies()
+    return handle
 end
 
+function Library:Notify(config)
+    config = config or {}
+    self._notifyQueue = self._notifyQueue or {}
+    self._activeNotifies = self._activeNotifies or {}
+    local handle = self:_createNotifyHandle(config)
+    if self:_visibleNotifyCount() >= self:_notifyMaxVisible(config) then
+        self._notifySeq = (self._notifySeq or 0) + 1
+        handle.Queued = true
+        handle.Seq = self._notifySeq
+        self._notifyQueue[#self._notifyQueue + 1] = {
+            Config = config,
+            Handle = handle,
+            Priority = handle.Priority,
+            Seq = handle.Seq,
+        }
+        return handle.Proxy
+    end
+    self:_buildNotification(config, handle)
+    return handle.Proxy
+end
+
+function Library:GetNotifications()
+    local out = {}
+    for _, record in ipairs(self._activeNotifies or {}) do out[#out + 1] = record.Handle.Proxy end
+    for _, record in ipairs(self._notifyQueue or {}) do out[#out + 1] = record.Handle.Proxy end
+    return out
+end
+
+function Library:GetQueuedNotifications()
+    local out = {}
+    for _, record in ipairs(self._notifyQueue or {}) do out[#out + 1] = record.Handle.Proxy end
+    return out
+end
+
+function Library:ClearNotifications()
+    local queued = self._notifyQueue or {}
+    for _, record in ipairs(queued) do
+        record.Handle.Queued = false
+        record.Handle.Closed = true
+        record.Handle.Visible = false
+    end
+    self._notifyQueue = {}
+    -- копия списка: Close() удаляет записи из _activeNotifies
+    local active = {}
+    for i, record in ipairs(self._activeNotifies or {}) do active[i] = record end
+    for _, record in ipairs(active) do
+        record.Handle.Close()
+    end
+end
+
+-- ============================================================
+-- HUD-ВИДЖЕТЫ (перетаскивание, привязка к углам, сохранение позиции)
+-- ============================================================
+-- local hud = Library:CreateHUD({
+--     Name = "FPS", Text = "60 FPS", Icon = "🎯", Position = "top-left",
+--     Flag = "hud_fps", Draggable = true, OnClick = function(widget) end,
+-- })
+-- hud:SetText("120 FPS")   hud:SetIcon("⚡")   hud:SetVisible(false)
+-- hud:SetPosition("bottom-right")   hud:GetPosition().Side
+-- Позиция (Side / X / Y) пишется в Flag, поэтому переживает перезапуск.
+local HUD_MARGIN = 16
+
+local function isHUDSide(side)
+    return side == "top-left" or side == "top-right" or side == "bottom-left" or side == "bottom-right"
+end
+
+function Library:_ensureHUDLayer()
+    if self._hudLayer and self._hudLayer.Parent then return self._hudLayer end
+    local layer = Instance.new("Frame")
+    layer.Name = "HUDLayer"
+    layer.BackgroundTransparency = 1
+    layer.Size = UDim2.new(1, 0, 1, 0)
+    layer.ZIndex = 900
+    layer.Parent = self.ScreenGui
+    self._hudLayer = layer
+    return layer
+end
+
+function Library:_hudContainerSize()
+    local layer = self:_ensureHUDLayer()
+    local size = layer and layer.AbsoluteSize
+    if size and tonumber(size.X) and tonumber(size.Y) and size.X > 0 and size.Y > 0 then
+        return size.X, size.Y
+    end
+    return 1280, 720
+end
+
+function Library:CreateHUD(config)
+    config = config or {}
+    local self = self
+    local layer = self:_ensureHUDLayer()
+
+    local width = math.clamp(math.floor(tonumber(config.Width) or 132), 56, 360)
+    local height = math.clamp(math.floor(tonumber(config.Height) or 34), 24, 90)
+    local draggable = config.Draggable ~= false
+    local background = config.Background or BG_PANEL
+
+    local widget = Instance.new("TextButton")
+    widget.Name = tostring(config.Name or "HUDWidget")
+    widget.BackgroundColor3 = background
+    widget.BackgroundTransparency = 0.08
+    widget.BorderSizePixel = 0
+    widget.AutoButtonColor = false
+    widget.Text = ""
+    widget.Size = UDim2.new(0, width, 0, height)
+    widget.ZIndex = 902
+    widget.Parent = layer
+    createCorner(widget, math.min(10, math.floor(height / 2)))
+
+    local stroke = Instance.new("UIStroke")
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Color = config.Accent or THEMES[currentThemeKey].Accent
+    stroke.Thickness = 1.4
+    stroke.Transparency = 0.35
+    stroke.Parent = widget
+
+    local iconLabel = Instance.new("TextLabel")
+    iconLabel.Name = "HUDIcon"
+    iconLabel.BackgroundTransparency = 1
+    iconLabel.Position = UDim2.new(0, 6, 0, 0)
+    iconLabel.Size = UDim2.new(0, 22, 1, 0)
+    iconLabel.Font = Enum.Font.GothamBold
+    iconLabel.Text = tostring(config.Icon or "•")
+    iconLabel.TextColor3 = config.Accent or THEMES[currentThemeKey].Accent
+    iconLabel.TextSize = 14
+    iconLabel.ZIndex = 903
+    iconLabel.Parent = widget
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Name = "HUDText"
+    textLabel.BackgroundTransparency = 1
+    textLabel.Position = UDim2.new(0, 28, 0, 0)
+    textLabel.Size = UDim2.new(1, -34, 1, 0)
+    textLabel.Font = Enum.Font.GothamBold
+    textLabel.Text = tostring(config.Text or config.Name or "HUD")
+    textLabel.TextColor3 = TEXT_COLOR
+    textLabel.TextSize = 12
+    textLabel.TextXAlignment = Enum.TextXAlignment.Left
+    textLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    textLabel.ZIndex = 903
+    textLabel.Parent = widget
+
+    local side = isHUDSide(config.Position) and config.Position or "top-left"
+    local positionMode = "corner"
+    local offsetX, offsetY = HUD_MARGIN, HUD_MARGIN
+    local dragging = false
+    local dragMoved = false
+
+    local function containerOffsets(cornerSide)
+        local containerWidth, containerHeight = self:_hudContainerSize()
+        if cornerSide == "top-right" then return containerWidth - width - HUD_MARGIN, HUD_MARGIN end
+        if cornerSide == "bottom-left" then return HUD_MARGIN, containerHeight - height - HUD_MARGIN end
+        if cornerSide == "bottom-right" then
+            return containerWidth - width - HUD_MARGIN, containerHeight - height - HUD_MARGIN
+        end
+        return HUD_MARGIN, HUD_MARGIN
+    end
+
+    local function savePosition()
+        if not config.Flag then return end
+        self:SetFlag(config.Flag, {
+            Side = side,
+            Mode = positionMode,
+            X = math.floor(offsetX),
+            Y = math.floor(offsetY),
+        })
+    end
+
+    local function applyPosition(animate)
+        local target
+        if positionMode == "free" then
+            target = UDim2.new(0, math.floor(offsetX), 0, math.floor(offsetY))
+        elseif side == "top-right" then
+            target = UDim2.new(1, -HUD_MARGIN - width, 0, HUD_MARGIN)
+        elseif side == "bottom-left" then
+            target = UDim2.new(0, HUD_MARGIN, 1, -HUD_MARGIN - height)
+        elseif side == "bottom-right" then
+            target = UDim2.new(1, -HUD_MARGIN - width, 1, -HUD_MARGIN - height)
+        else
+            target = UDim2.new(0, HUD_MARGIN, 0, HUD_MARGIN)
+        end
+        if animate then
+            TweenService:Create(widget, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                Position = target,
+            }):Play()
+        else
+            widget.Position = target
+        end
+    end
+
+    local function setSide(newSide, animate)
+        if not isHUDSide(newSide) then return false end
+        side = newSide
+        positionMode = "corner"
+        offsetX, offsetY = containerOffsets(side)
+        applyPosition(animate)
+        savePosition()
+        return true
+    end
+
+    local function snapToCorner(animate)
+        if config.SnapToCorners == false then
+            positionMode = "free"
+            savePosition()
+            return side
+        end
+        local containerWidth, containerHeight = self:_hudContainerSize()
+        local centerX = offsetX + width / 2
+        local centerY = offsetY + height / 2
+        local targetSide
+        if centerY <= containerHeight / 2 then
+            targetSide = centerX <= containerWidth / 2 and "top-left" or "top-right"
+        else
+            targetSide = centerX <= containerWidth / 2 and "bottom-left" or "bottom-right"
+        end
+        setSide(targetSide, animate)
+        return targetSide
+    end
+
+    local function loadPosition()
+        local saved = config.Flag and self.Flags[config.Flag]
+        if type(saved) == "string" and isHUDSide(saved) then
+            setSide(saved, false)
+            return true
+        end
+        if type(saved) == "table" then
+            if isHUDSide(saved.Side) then side = saved.Side end
+            positionMode = saved.Mode == "free" and "free" or "corner"
+            offsetX = tonumber(saved.X) or offsetX
+            offsetY = tonumber(saved.Y) or offsetY
+            if positionMode == "free" then
+                applyPosition(false)
+            else
+                offsetX, offsetY = containerOffsets(side)
+                applyPosition(false)
+            end
+            return true
+        end
+        if isHUDSide(config.Position) then
+            side = config.Position
+        end
+        offsetX, offsetY = containerOffsets(side)
+        applyPosition(false)
+        -- начальная позиция тоже сохраняется, чтобы Flag сразу отражал состояние
+        savePosition()
+        return false
+    end
+
+    if draggable then
+        widget.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            dragging = true
+            dragMoved = false
+            -- AbsolutePosition даёт текущий пиксельный сдвиг (лейер во весь экран);
+            -- в тестовой заглушке его нет — тогда берём сохранённые оффсеты.
+            local absolute = widget.AbsolutePosition
+            if absolute and tonumber(absolute.X) and tonumber(absolute.Y) then
+                offsetX, offsetY = absolute.X, absolute.Y
+            else
+                offsetX, offsetY = containerOffsets(side)
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if not dragging then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseMovement
+                and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            local delta = input.Delta
+            if type(delta) ~= "table" then return end
+            if delta.X ~= 0 or delta.Y ~= 0 then dragMoved = true end
+            offsetX = offsetX + delta.X
+            offsetY = offsetY + delta.Y
+            positionMode = "free"
+            applyPosition(false)
+        end)
+        UserInputService.InputEnded:Connect(function(input)
+            if not dragging then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            dragging = false
+            if dragMoved then snapToCorner(true) end
+        end)
+    end
+
+    local function setText(value)
+        textLabel.Text = tostring(value or "")
+        return true
+    end
+
+    local function setIcon(value)
+        iconLabel.Text = tostring(value or "")
+        iconLabel.Visible = iconLabel.Text ~= ""
+        return true
+    end
+
+    local function updateTheme()
+        widget.BackgroundColor3 = background
+        stroke.Color = config.Accent or THEMES[currentThemeKey].Accent
+        iconLabel.TextColor3 = config.Accent or THEMES[currentThemeKey].Accent
+        textLabel.TextColor3 = TEXT_COLOR
+    end
+
+    local obj
+    if type(config.OnClick) == "function" then
+        widget.MouseButton1Click:Connect(function()
+            if dragMoved then return end
+            pcall(config.OnClick, obj)
+        end)
+    end
+    addHover(widget, self)
+    loadPosition()
+
+    obj = {
+        Instance = widget,
+        GetText = function() return textLabel.Text end,
+        SetText = function(first, second)
+            if first == obj then setText(second) else setText(first) end
+            return obj
+        end,
+        GetIcon = function() return iconLabel.Text end,
+        SetIcon = function(first, second)
+            if first == obj then setIcon(second) else setIcon(first) end
+            return obj
+        end,
+        GetVisible = function() return widget.Visible end,
+        SetVisible = function(first, second)
+            local value
+            if first == obj then value = second else value = first end
+            widget.Visible = value ~= false
+            return obj
+        end,
+        GetPosition = function()
+            return { Side = side, Mode = positionMode, X = offsetX, Y = offsetY }
+        end,
+        SetPosition = function(first, second, third)
+            local value
+            if first == obj then value = second else value = first end
+            if type(value) == "table" then
+                if isHUDSide(value.Side) then return setSide(value.Side, true) end
+                if tonumber(value.X) and tonumber(value.Y) then
+                    offsetX, offsetY = tonumber(value.X), tonumber(value.Y)
+                    positionMode = "free"
+                    applyPosition(true)
+                    savePosition()
+                    return true
+                end
+                return false
+            end
+            if type(value) == "string" then return setSide(value, true) end
+            if type(value) == "number" and tonumber(second) then
+                offsetX, offsetY = value, tonumber(second)
+                positionMode = "free"
+                applyPosition(true)
+                savePosition()
+                return true
+            end
+            return false
+        end,
+        Snap = function() return snapToCorner(true) end,
+        IsDragging = function() return dragging end,
+        UpdateTheme = updateTheme,
+        Destroy = function()
+            if widget.Parent then widget:Destroy() end
+            for i, entry in ipairs(self._hudWidgets or {}) do
+                if entry == obj then table.remove(self._hudWidgets, i) break end
+            end
+            return true
+        end,
+    }
+
+    self._hudWidgets = self._hudWidgets or {}
+    table.insert(self._hudWidgets, obj)
+    table.insert(self.Elements, { Type = "HUD", Instance = widget, UpdateTheme = updateTheme })
+    return obj
+end
+
+function Library:CreateHUDWidget(config) return self:CreateHUD(config) end
+
+function Library:GetHUDWidgets()
+    local out = {}
+    for i, widget in ipairs(self._hudWidgets or {}) do out[i] = widget end
+    return out
+end
+
+function Library:SetHUDVisible(first, second)
+    local value
+    if first == self then value = second else value = first end
+    local layer = self._hudLayer
+    if not layer then return false end
+    layer.Visible = value ~= false
+    return true
+end
+
+function Library:DestroyHUDWidgets()
+    local widgets = self._hudWidgets or {}
+    for i = #widgets, 1, -1 do
+        local widget = widgets[i]
+        if widget.Destroy then widget.Destroy() end
+    end
+    self._hudWidgets = {}
+    if self._hudLayer and self._hudLayer.Parent then self._hudLayer:Destroy() end
+    self._hudLayer = nil
+    return true
+end
 -- ============================================================
 -- PATCH: avatar + shine
 -- ============================================================

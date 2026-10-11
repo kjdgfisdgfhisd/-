@@ -4,7 +4,7 @@
 -- хотьба 37,333
 -- я ФИКСИРУЮ
 
-local HIros = loadstring(game:HttpGet("https://raw.githubusercontent.com/kjdgfisdgfhisd/-/refs/heads/main/HIros%206.1"))()
+local HIros = loadstring(game:HttpGet("https://raw.githubusercontent.com/kjdgfisdgfhisd/-/refs/heads/main/HIros%206.0"))()
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
